@@ -1,0 +1,36 @@
+# Added by code-review-graph
+.code-review-graph/
+
+# Environment & Sensitive Secrets
+.env
+*.env
+*.env.*
+cookies.txt
+*.key
+*.pem
+
+# Local Databases & Storage
+*.db
+*.sqlite
+*.sqlite3
+records.db
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.pytest_cache/
+
+# Node / Frontend Build
+node_modules/
+frontend/node_modules/
+frontend/dist/
+.vite/
+
+# System & Tool Caches
+.DS_Store
+Thumbs.db
+

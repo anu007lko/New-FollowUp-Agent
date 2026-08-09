@@ -1,0 +1,9 @@
+# Reproducible Python backend dependencies for Recruitment Follow-Up Agent
+fastapi>=0.141.0
+uvicorn>=0.52.0
+pydantic>=2.9.0
+starlette>=0.46.0
+httpx>=0.28.0
+pytest>=9.0.0
+msal>=1.37.0
+cryptography==42.0.8

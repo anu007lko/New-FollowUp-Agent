@@ -1,0 +1,13 @@
+{
+  "servers": {
+    "code-review-graph": {
+      "command": "uvx",
+      "args": [
+        "code-review-graph",
+        "serve"
+      ],
+      "cwd": "/Users/tarunsrivastava/Desktop/Follow Up Agent",
+      "type": "stdio"
+    }
+  }
+}
