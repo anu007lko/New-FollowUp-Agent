@@ -22,7 +22,9 @@ export function useRecords() {
   const [mailboxRefreshError, setMailboxRefreshError] = useState<string | null>(null);
 
   const fetchDashboard = useCallback(async () => {
-    setLoading(true);
+    if (!dashboard) {
+      setLoading(true);
+    }
     setError(null);
     try {
       const res = await fetch(`${API}/dashboard`);
@@ -38,7 +40,7 @@ export function useRecords() {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [dashboard]);
 
   const openRecord = useCallback(async (id: string) => {
     setRecordLoading(true);
@@ -60,6 +62,14 @@ export function useRecords() {
   const closeRecord = useCallback(() => {
     setSelectedRecord(null);
   }, []);
+
+  const refreshAllData = useCallback(async (recordId?: string) => {
+    await fetchDashboard();
+    const targetId = recordId || selectedRecord?.id;
+    if (targetId) {
+      return await openRecord(targetId);
+    }
+  }, [fetchDashboard, openRecord, selectedRecord?.id]);
 
   const runMailboxReview = useCallback(async () => {
     if (mailboxRefreshing) return;
@@ -123,5 +133,6 @@ export function useRecords() {
     runMailboxReview,
     openRecord,
     closeRecord,
+    refreshAllData,
   };
 }

@@ -241,6 +241,26 @@ def test_interview_confirmation_choices(temp_db, monkeypatch):
     assert res_resched.json()["interview_state"] == InterviewState.RESCHEDULED.value
     v3 = res_resched.json()["record_version"]
 
+    # Choice: scheduled -> interview scheduled status
+    res_sched = client.post(
+        f"/api/v1/records/{rec_id}/interview-confirmation",
+        headers=CSRF_HEADERS,
+        json={
+            "record_id": rec_id,
+            "graph_immutable_id": graph_id,
+            "conversation_id": conv_id,
+            "record_version": v3,
+            "choice": "scheduled",
+            "new_date": "2026-08-15",
+            "new_time": "10:00",
+            "timezone": "America/New_York",
+            "source": "Scheduled manually"
+        }
+    )
+    assert res_sched.status_code == 200
+    assert res_sched.json()["interview_state"] == InterviewState.SCHEDULED.value
+    assert res_sched.json()["domain_status"] == DomainStatus.INTERVIEW_REQUEST_SCHEDULED.value
+
 
 def test_manager_can_confirm_future_schedule_and_defer_review(temp_db, monkeypatch):
     """A future schedule and a manager-approved review deadline are explicit local actions."""

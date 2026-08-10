@@ -17,9 +17,8 @@ import logging
 import threading
 import json
 from datetime import datetime, timedelta, timezone
-from zoneinfo import ZoneInfo
-from typing import Optional, Dict, Any, List
-from backend.app.domain.models import DomainStatus, CategoryEnum
+from enum import Enum
+from backend.app.domain.models import DomainStatus, CategoryEnum, SubmissionRecord
 from backend.app.domain.date_utils import TIMEZONE_NEW_YORK
 from backend.app.application.import_service import ImportService
 from backend.app.infrastructure.persistence import EncryptedPersistenceEngine
@@ -30,6 +29,25 @@ from backend.app.domain.consolidated_classifier import (
 )
 
 logger = logging.getLogger("daily_review_engine")
+
+
+class SingleRecordRefreshStatus(str, Enum):
+    SUCCESS = "success"
+    NOT_FOUND = "not_found"
+    REFRESH_DISABLED = "refresh_disabled"
+    CONFLICT = "conflict"
+
+
+class SingleRecordRefreshResult:
+    def __init__(
+        self,
+        status: SingleRecordRefreshStatus,
+        record: Optional[SubmissionRecord] = None,
+        error_message: Optional[str] = None
+    ):
+        self.status = status
+        self.record = record
+        self.error_message = error_message
 
 
 class DailyReviewResult:
@@ -341,12 +359,15 @@ class DailyReviewEngine:
                     payload.get("classification_status"),
                     payload.get("reason_code"),
                     payload.get("timer_anchor_type"),
+                    payload.get("confidence_label"),
                 )
+                conf_label_run = result.confidence_label if isinstance(result.confidence_label, str) else payload.get("confidence_label")
                 new_derived = (
                     result.category,
                     result.proposed_status,
                     result.reason_code,
                     result.timer_anchor_type,
+                    conf_label_run,
                 )
                 if stored_status != target_status.value or prior_derived != new_derived:
                     payload["classification_category"] = result.category
@@ -355,6 +376,38 @@ class DailyReviewEngine:
                     payload["timer_anchor_type"] = result.timer_anchor_type
                     payload["classification_timestamp"] = datetime.now(timezone.utc).isoformat()
                     payload["domain_status"] = target_status.value
+
+                    if result.interview_date:
+                        payload["interview_date"] = result.interview_date
+                    if result.interview_time:
+                        payload["interview_time"] = result.interview_time
+                    if result.timezone:
+                        payload["interview_timezone"] = result.timezone
+                        payload["timezone"] = result.timezone
+                    if result.timezone_source:
+                        payload["timezone_source"] = result.timezone_source
+                    if result.confidence_label:
+                        payload["confidence_label"] = result.confidence_label
+                    if result.interview_datetime:
+                        payload["interview_datetime"] = result.interview_datetime
+
+                    se = payload.get("structured_evidence") or {}
+                    if not isinstance(se, dict):
+                        se = {}
+                    if result.interview_date:
+                        se["interview_date"] = result.interview_date
+                    if result.interview_time:
+                        se["interview_time"] = result.interview_time
+                    if result.timezone:
+                        se["timezone"] = result.timezone
+                    if result.timezone_source:
+                        se["timezone_source"] = result.timezone_source
+                    if result.confidence_label:
+                        se["confidence_label"] = result.confidence_label
+                    if result.supporting_message_ids:
+                        se["supporting_message_ids"] = result.supporting_message_ids
+                    payload["structured_evidence"] = se
+
                     try:
                         self.persistence.update_record_optimistically(
                             rec.id, payload, target_status.value, version
@@ -477,3 +530,193 @@ class DailyReviewEngine:
                 conn.commit()
         except Exception:
             pass
+
+    def refresh_single_record(self, record_id: str) -> SingleRecordRefreshResult:
+        """
+        Safely fetch and merge Graph thread updates for exactly one existing record,
+        without triggering full review workflows, imports, or iterating all records.
+        """
+        if not self._mailbox_refresh_enabled:
+            return SingleRecordRefreshResult(
+                status=SingleRecordRefreshStatus.REFRESH_DISABLED,
+                error_message="Graph mailbox refresh is disabled"
+            )
+
+        record = self.persistence.get_record_by_id(record_id)
+        if not record:
+            return SingleRecordRefreshResult(
+                status=SingleRecordRefreshStatus.NOT_FOUND,
+                error_message="Record not found"
+            )
+
+        snapshot = self.persistence.get_record_payload_snapshot(record_id)
+        if not snapshot:
+            return SingleRecordRefreshResult(
+                status=SingleRecordRefreshStatus.NOT_FOUND,
+                error_message="Record payload snapshot not found"
+            )
+
+        payload, version, stored_status = snapshot
+        mailbox_changed = False
+
+        primary_messages, primary_status = self.graph_client.fetch_exact_conversation_messages(
+            payload.get("conversation_id")
+        )
+        if primary_status == "ok" and primary_messages:
+            merged_messages, primary_changed = self._merge_refreshed_messages(
+                payload.get("thread_messages", []), primary_messages
+            )
+            if primary_changed:
+                payload["thread_messages"] = merged_messages
+                payload["thread_message_count"] = len(merged_messages)
+                mailbox_changed = True
+
+        linked_conversations = payload.get("linked_conversations", [])
+        for linked in linked_conversations:
+            if not isinstance(linked, dict) or not linked.get("conversation_id"):
+                continue
+            linked_messages, linked_status = self.graph_client.fetch_exact_conversation_messages(
+                linked["conversation_id"]
+            )
+            if linked_status == "ok" and linked_messages:
+                merged_linked, linked_changed = self._merge_refreshed_messages(
+                    linked.get("thread_messages", []), linked_messages
+                )
+                if linked_changed:
+                    linked["thread_messages"] = merged_linked
+                    mailbox_changed = True
+
+        if mailbox_changed:
+            payload["linked_conversations"] = payload.get("linked_conversations", [])
+
+        thread_messages = payload.get("thread_messages", [])
+        if not thread_messages or stored_status == DomainStatus.CLOSED.value:
+            return SingleRecordRefreshResult(
+                status=SingleRecordRefreshStatus.SUCCESS,
+                record=self.persistence.get_record_by_id(record_id)
+            )
+
+        timeline = payload.get("timeline", [])
+        has_manager_decision = any(
+            isinstance(entry, dict) and entry.get("event_type") in {
+                "MANAGER_OUTCOME_DECISION",
+                "INTERVIEW_CONFIRMATION_DECISION",
+            }
+            for entry in timeline
+        )
+        if has_manager_decision:
+            if (
+                stored_status == DomainStatus.AWAITING_FEEDBACK.value
+                and payload.get("interview_state") == "completed"
+                and payload.get("feedback_due_at")
+            ):
+                try:
+                    due_at = datetime.fromisoformat(payload["feedback_due_at"])
+                    if due_at.tzinfo is None:
+                        due_at = due_at.replace(tzinfo=timezone.utc)
+                    if datetime.now(timezone.utc) >= due_at:
+                        payload["domain_status"] = DomainStatus.FEEDBACK_DUE.value
+                        self.persistence.update_record_optimistically(
+                            record_id, payload, DomainStatus.FEEDBACK_DUE.value, version
+                        )
+                except ValueError:
+                    return SingleRecordRefreshResult(
+                        status=SingleRecordRefreshStatus.CONFLICT,
+                        error_message="Optimistic update conflict during feedback timer update"
+                    )
+                except TypeError:
+                    pass
+            return SingleRecordRefreshResult(
+                status=SingleRecordRefreshStatus.SUCCESS,
+                record=self.persistence.get_record_by_id(record_id)
+            )
+
+        authoritative_followup_ids = []
+        for entry in timeline:
+            if isinstance(entry, dict) and entry.get("event_type") == "MANAGER_FOLLOWUP":
+                message_id = entry.get("message_id") or entry.get("graph_immutable_id")
+                if message_id:
+                    authoritative_followup_ids.append(message_id)
+
+        result = classify_record(
+            record.graph_immutable_id,
+            thread_messages,
+            datetime.now(TIMEZONE_NEW_YORK),
+            authoritative_followup_ids=authoritative_followup_ids,
+            timeline=timeline,
+            linked_conversations=payload.get("linked_conversations", []),
+        )
+        target_status = PROPOSED_TO_DOMAIN_STATUS.get(result.proposed_status)
+        if target_status is None and result.proposed_status in {s.value for s in DomainStatus}:
+            target_status = DomainStatus(result.proposed_status)
+        if target_status is None:
+            target_status = DomainStatus.NEEDS_REVIEW
+
+        prior_derived = (
+            payload.get("classification_category"),
+            payload.get("classification_status"),
+            payload.get("reason_code"),
+            payload.get("timer_anchor_type"),
+            payload.get("confidence_label"),
+        )
+        conf_label = result.confidence_label if isinstance(result.confidence_label, str) else payload.get("confidence_label")
+        new_derived = (
+            result.category,
+            result.proposed_status,
+            result.reason_code,
+            result.timer_anchor_type,
+            conf_label,
+        )
+        if mailbox_changed or stored_status != target_status.value or prior_derived != new_derived:
+            payload["classification_category"] = result.category
+            payload["classification_status"] = result.proposed_status
+            payload["reason_code"] = result.reason_code
+            payload["timer_anchor_type"] = result.timer_anchor_type
+            payload["classification_timestamp"] = datetime.now(timezone.utc).isoformat()
+            payload["domain_status"] = target_status.value
+
+            if result.interview_date:
+                payload["interview_date"] = result.interview_date
+            if result.interview_time:
+                payload["interview_time"] = result.interview_time
+            if result.timezone:
+                payload["interview_timezone"] = result.timezone
+                payload["timezone"] = result.timezone
+            if result.timezone_source:
+                payload["timezone_source"] = result.timezone_source
+            if result.confidence_label:
+                payload["confidence_label"] = result.confidence_label
+            if result.interview_datetime:
+                payload["interview_datetime"] = result.interview_datetime
+
+            se = payload.get("structured_evidence") or {}
+            if not isinstance(se, dict):
+                se = {}
+            if result.interview_date:
+                se["interview_date"] = result.interview_date
+            if result.interview_time:
+                se["interview_time"] = result.interview_time
+            if result.timezone:
+                se["timezone"] = result.timezone
+            if result.timezone_source:
+                se["timezone_source"] = result.timezone_source
+            if result.confidence_label:
+                se["confidence_label"] = result.confidence_label
+            if result.supporting_message_ids:
+                se["supporting_message_ids"] = result.supporting_message_ids
+            payload["structured_evidence"] = se
+
+            try:
+                self.persistence.update_record_optimistically(
+                    record_id, payload, target_status.value, version
+                )
+            except ValueError:
+                return SingleRecordRefreshResult(
+                    status=SingleRecordRefreshStatus.CONFLICT,
+                    error_message="Optimistic update conflict during classification update"
+                )
+
+        return SingleRecordRefreshResult(
+            status=SingleRecordRefreshStatus.SUCCESS,
+            record=self.persistence.get_record_by_id(record_id)
+        )

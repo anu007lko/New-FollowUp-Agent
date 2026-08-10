@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FullRecord, LinkedInterviewSuggestion, LinkedConversation, DraftRecipientPreview, DraftApprovalResponse, DraftCreationResult, DraftOperationStatus } from '../types';
 import { formatTimestamp } from '../utils/displayStatus';
+import { CustomDropdown } from './CustomDropdown';
+import { playSound } from '../utils/audio';
 
 interface ManagerActionModalsProps {
   activeModal: string | null;
@@ -8,7 +10,7 @@ interface ManagerActionModalsProps {
   selectedSuggestion?: LinkedInterviewSuggestion | null;
   selectedLinked?: LinkedConversation | null;
   onCloseModal: () => void;
-  onSuccessAction: () => void;
+  onSuccessAction: (endpoint?: string, payloadData?: any) => void;
   onRefreshRecord?: () => Promise<FullRecord | void>;
 }
 
@@ -55,6 +57,22 @@ export function ManagerActionModals({
         .then(r => r.ok ? r.json() : Promise.reject())
         .then(d => setCsrfToken(d.csrf_token || ''))
         .catch(() => setErrorMessage('Secure local session could not be established.'));
+      if (activeModal === 'interview') {
+        const dDate = record.interview_date || record.structured_evidence?.interview_date || '';
+        const dTime = record.interview_time || record.structured_evidence?.interview_time || '';
+        const dTz = record.interview_timezone || record.structured_evidence?.timezone || 'America/New_York';
+        setRescheduleDate(dDate);
+        setRescheduleTime(dTime);
+        setRescheduleTz(dTz);
+        const istate = (record.interview_state || '').toLowerCase();
+        if (['scheduled', 'completed', 'rescheduled', 'cancelled', 'not_confirmed'].includes(istate)) {
+          setInterviewChoice(istate);
+        } else if (record.domain_status === 'InterviewAwaitingConfirmation' || record.domain_status === 'InterviewRequestScheduled' || record.domain_status === 'InterviewScheduled') {
+          setInterviewChoice('scheduled');
+        } else {
+          setInterviewChoice('completed');
+        }
+      }
       if (activeModal === 'followup') {
         fetch(`/api/v1/records/${record.id}/draft-status`)
           .then(async r => r.ok ? r.json() : null)
@@ -84,14 +102,29 @@ export function ManagerActionModals({
   };
 
   const handleApiSubmit = async (endpoint: string, payloadData: any) => {
+    if (endpoint === 'outcome-decision') {
+      playSound('apply');
+    } else if (endpoint === 'close') {
+      playSound('close');
+    }
     setSubmitting(true);
     setErrorMessage(null);
     try {
+      let token = csrfToken;
+      if (!token) {
+        const tokenRes = await fetch('/api/v1/session/csrf-token', { method: 'POST' }).catch(() => null);
+        if (tokenRes && tokenRes.ok) {
+          const tokenData = await tokenRes.json().catch(() => ({}));
+          token = tokenData.csrf_token || '';
+          setCsrfToken(token);
+        }
+      }
+
       const res = await fetch(`/api/v1/records/${record.id}/${endpoint}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-csrf-token': csrfToken,
+          'x-csrf-token': token,
         },
         body: JSON.stringify({ ...basePayload, ...payloadData }),
       });
@@ -105,7 +138,7 @@ export function ManagerActionModals({
         throw new Error(err.detail || 'Action failed');
       }
 
-      onSuccessAction();
+      onSuccessAction(endpoint, payloadData);
       onCloseModal();
     } catch (e: any) {
       setErrorMessage(e.message || 'Action failed');
@@ -443,76 +476,115 @@ export function ManagerActionModals({
         )}
 
         {/* Modal: Confirm Interview */}
-        {activeModal === 'interview' && (
-          <div>
-            <h3 className="modal-title">Confirm Interview Status</h3>
-            <p className="modal-subtitle">Select the verified status for this interview workflow:</p>
+        {activeModal === 'interview' && (() => {
+          const origDate = record.interview_date || record.structured_evidence?.interview_date || '';
+          const origTime = record.interview_time || record.structured_evidence?.interview_time || '';
 
-            <div className="modal-form-group">
-              <label className="modal-label">Status Choice:</label>
-              <select
-                className="modal-select"
-                value={interviewChoice}
-                onChange={e => setInterviewChoice(e.target.value)}
-              >
-                <option value="completed">Completed (Starts 48h Feedback Timer)</option>
-                <option value="rescheduled">Rescheduled</option>
-                <option value="cancelled">Cancelled (Keeps Submission Open)</option>
-                <option value="not_confirmed">Not Confirmed (Keeps Submission Open)</option>
-              </select>
-            </div>
+          const hasCalendarInvite = (record.attachment_count && record.attachment_count > 0) ||
+            (record.timeline || []).some(t => {
+              const p = (t.body_preview || '').toLowerCase();
+              return p.includes('.ics') || p.includes('calendar') || p.includes('invite');
+            });
 
-            {interviewChoice === 'rescheduled' && (
-              <div className="modal-form-grid">
-                <div>
-                  <label className="modal-label">New Date:</label>
-                  <input
-                    type="date"
-                    className="modal-input"
-                    value={rescheduleDate}
-                    onChange={e => setRescheduleDate(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="modal-label">New Time:</label>
-                  <input
-                    type="time"
-                    className="modal-input"
-                    value={rescheduleTime}
-                    onChange={e => setRescheduleTime(e.target.value)}
-                  />
-                </div>
-                <div>
-                  <label className="modal-label">Timezone:</label>
-                  <input
-                    type="text"
-                    className="modal-input"
-                    value={rescheduleTz}
-                    onChange={e => setRescheduleTz(e.target.value)}
-                  />
-                </div>
+          let detectedSourceLabel = '';
+          if (origDate || origTime) {
+            detectedSourceLabel = hasCalendarInvite ? 'Detected from calendar invite' : 'Detected from thread';
+          }
+
+          const isUnchangedFromDetected = Boolean(origDate) && (rescheduleDate === origDate) && (!origTime || rescheduleTime === origTime);
+          const computedSource = isUnchangedFromDetected
+            ? (hasCalendarInvite ? 'Scheduled from calendar invite' : 'Scheduled from thread')
+            : 'Scheduled manually';
+
+          return (
+            <div>
+              <h3 className="modal-title">Confirm Interview Status</h3>
+              <p className="modal-subtitle">Select the verified status for this interview workflow:</p>
+
+              <div className="modal-form-group">
+                <label className="modal-label">Status Choice:</label>
+                <CustomDropdown
+                  options={[
+                    { value: 'scheduled', label: 'Interview Scheduled' },
+                    { value: 'completed', label: 'Completed (Starts 48h Feedback Timer)' },
+                    { value: 'rescheduled', label: 'Rescheduled' },
+                    { value: 'cancelled', label: 'Cancelled (Keeps Submission Open)' },
+                    { value: 'not_confirmed', label: 'Not Confirmed (Keeps Submission Open)' },
+                  ]}
+                  value={interviewChoice}
+                  onChange={val => setInterviewChoice(val)}
+                  ariaLabel="Status Choice"
+                />
               </div>
-            )}
 
-            <div className="modal-actions">
-              <button className="btn-secondary" onClick={onCloseModal} disabled={submitting}>Cancel</button>
-              <button
-                className="btn-primary"
-                disabled={submitting || (interviewChoice === 'rescheduled' && (!rescheduleDate || !rescheduleTime))}
-                onClick={() =>
-                  handleApiSubmit('interview-confirmation', {
-                    choice: interviewChoice,
-                    new_date: rescheduleDate || undefined,
-                    new_time: rescheduleTime || undefined,
-                    timezone: rescheduleTz,
-                  })
-                }
-              >
-                {submitting ? 'Confirming...' : 'Save Interview Status'}
-              </button>
+              {(interviewChoice === 'scheduled' || interviewChoice === 'rescheduled') && (
+                <div className="modal-form-section">
+                  {detectedSourceLabel && (
+                    <p className="modal-detected-badge" style={{ color: 'var(--accent)', fontSize: '0.82rem', marginBottom: '8px' }}>
+                      ℹ {detectedSourceLabel}
+                    </p>
+                  )}
+                  <div className="modal-form-grid">
+                    <div>
+                      <label htmlFor="interview-modal-date" className="modal-label">{interviewChoice === 'rescheduled' ? 'New Date:' : 'Interview Date:'}</label>
+                      <input
+                        id="interview-modal-date"
+                        type="date"
+                        className="modal-input"
+                        value={rescheduleDate}
+                        onChange={e => setRescheduleDate(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="interview-modal-time" className="modal-label">{interviewChoice === 'rescheduled' ? 'New Time:' : 'Interview Time:'}</label>
+                      <input
+                        id="interview-modal-time"
+                        type="time"
+                        className="modal-input"
+                        value={rescheduleTime}
+                        onChange={e => setRescheduleTime(e.target.value)}
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="interview-modal-tz" className="modal-label">Timezone:</label>
+                      <input
+                        id="interview-modal-tz"
+                        type="text"
+                        className="modal-input"
+                        value={rescheduleTz}
+                        onChange={e => setRescheduleTz(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              <div className="modal-actions">
+                <button className="btn-secondary" onClick={onCloseModal} disabled={submitting}>Cancel</button>
+                <button
+                  className="btn-primary"
+                  disabled={submitting || (interviewChoice === 'rescheduled' && !rescheduleDate)}
+                  onClick={() =>
+                    handleApiSubmit('interview-confirmation', {
+                      choice: interviewChoice,
+                      new_date: rescheduleDate || undefined,
+                      new_time: rescheduleTime || undefined,
+                      timezone: rescheduleTz || undefined,
+                      source: interviewChoice === 'scheduled' ? computedSource : undefined,
+                    })
+                  }
+                >
+                  {submitting ? 'Confirming...' : 'Save Interview Status'}
+                </button>
+              </div>
+              {errorMessage && (
+                <div className="modal-error-under-save" role="alert" style={{ marginTop: '12px', color: '#ff6b6b', fontSize: '0.85rem', textAlign: 'center' }}>
+                  ⚠️ {errorMessage}
+                </div>
+              )}
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* Modal: Review Outcome */}
         {activeModal === 'review_outcome' && (
@@ -522,16 +594,17 @@ export function ManagerActionModals({
 
             <div className="modal-form-group">
               <label className="modal-label">Manager Action Choice:</label>
-              <select
-                className="modal-select"
+              <CustomDropdown
+                options={[
+                  { value: 'Position Closed', label: 'Position Closed' },
+                  { value: 'Rejection', label: 'Rejection' },
+                  { value: 'Move to Needs Review', label: 'Move to Needs Review' },
+                  { value: 'Keep Open', label: 'Keep Open' },
+                ]}
                 value={outcomeCategory}
-                onChange={e => setOutcomeCategory(e.target.value)}
-              >
-                <option value="Position Closed">Position Closed</option>
-                <option value="Rejection">Rejection</option>
-                <option value="Move to Needs Review">Move to Needs Review</option>
-                <option value="Keep Open">Keep Open</option>
-              </select>
+                onChange={setOutcomeCategory}
+                ariaLabel="Manager Action Choice"
+              />
             </div>
 
             <textarea
@@ -568,23 +641,24 @@ export function ManagerActionModals({
 
             <div className="modal-form-group">
               <label className="modal-label">Select Outcome:</label>
-              <select
-                className="modal-select"
+              <CustomDropdown
+                options={[
+                  { value: 'Interview Request', label: 'Interview Request' },
+                  { value: 'Interview Scheduled', label: 'Interview Scheduled' },
+                  { value: 'Position Closed', label: 'Position Closed' },
+                  { value: 'Rejection', label: 'Rejection' },
+                  { value: 'In Evaluation', label: 'In Evaluation' },
+                  { value: 'Feedback', label: 'Feedback' },
+                  { value: 'Duplicate / Already Submitted', label: 'Duplicate / Already Submitted' },
+                  { value: 'Acknowledgement', label: 'Acknowledgement' },
+                  { value: 'No Response', label: 'No Response' },
+                  { value: 'Unrelated', label: 'Unrelated' },
+                  { value: 'Keep in Needs Review', label: 'Keep in Needs Review' },
+                ]}
                 value={outcomeCategory}
-                onChange={e => setOutcomeCategory(e.target.value)}
-              >
-                <option value="Interview Request">Interview Request</option>
-                <option value="Interview Scheduled">Interview Scheduled</option>
-                <option value="Position Closed">Position Closed</option>
-                <option value="Rejection">Rejection</option>
-                <option value="In Evaluation">In Evaluation</option>
-                <option value="Feedback">Feedback</option>
-                <option value="Duplicate / Already Submitted">Duplicate / Already Submitted</option>
-                <option value="Acknowledgement">Acknowledgement</option>
-                <option value="No Response">No Response</option>
-                <option value="Unrelated">Unrelated</option>
-                <option value="Keep in Needs Review">Keep in Needs Review</option>
-              </select>
+                onChange={setOutcomeCategory}
+                ariaLabel="Select Outcome"
+              />
             </div>
 
             <div className="modal-actions">
@@ -612,17 +686,18 @@ export function ManagerActionModals({
 
             <div className="modal-form-group">
               <label className="modal-label">Close Reason:</label>
-              <select
-                className="modal-select"
+              <CustomDropdown
+                options={[
+                  { value: 'Position closed', label: 'Position closed' },
+                  { value: 'Candidate withdrawn', label: 'Candidate withdrawn' },
+                  { value: 'Client rejected', label: 'Client rejected' },
+                  { value: 'No follow-up needed', label: 'No follow-up needed' },
+                  { value: 'Other', label: 'Other (Note required)' },
+                ]}
                 value={closeReason}
-                onChange={e => setCloseReason(e.target.value)}
-              >
-                <option value="Position closed">Position closed</option>
-                <option value="Candidate withdrawn">Candidate withdrawn</option>
-                <option value="Client rejected">Client rejected</option>
-                <option value="No follow-up needed">No follow-up needed</option>
-                <option value="Other">Other (Note required)</option>
-              </select>
+                onChange={setCloseReason}
+                ariaLabel="Close Reason"
+              />
             </div>
 
             {closeReason === 'Other' && (

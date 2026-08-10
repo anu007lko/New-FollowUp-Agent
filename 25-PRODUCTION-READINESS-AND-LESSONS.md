@@ -59,7 +59,7 @@ Full backend tests; frontend tests/build; browser manager journeys; API/CSRF mat
 - Microsoft Graph: silent authentication and mailbox identity verified; `Mail.Read` and `Mail.ReadWrite` present; `Mail.Send` absent; no new consent or login triggered.
 - Automated verification: 347 backend tests passed, 49 frontend tests passed, and the production frontend build completed successfully.
 - Final encrypted recovery checkpoint: `backup-65d36a18_2026-08-08_15-18-43.enc`, authenticated and restored to quarantine with all 114 records.
-- Runtime: version 1.0.0; Graph review and manager-approved drafts enabled; Ollama and email sending disabled; legacy port 8765 untouched.
+- Runtime: version 1.0.0; Graph review and manager-approved drafts enabled; Ollama and email sending disabled. The obsolete legacy service on port 8765 was retired on 2026-08-09.
 
 ## Visual-system release lessons — 2026-08-09
 
@@ -68,3 +68,6 @@ Full backend tests; frontend tests/build; browser manager journeys; API/CSRF mat
 - What did not go well: the Figma Starter-plan connector reached its quota before an auditable final write-back. The design must not be represented as saved in Figma until that integration succeeds.
 - Current evidence: backend suite 352/352 passed, frontend suite 50/50 passed, TypeScript/build passed, static no-send scan passed; the visual session performed zero Graph calls, database mutations, draft actions, or sends.
 
+## Legacy retirement — 2026-08-09
+
+The obsolete `outlook-followup-agent` local runtime, launch item, listener on port 8765, application-support data, logs, and verified old project/snapshot folders were permanently removed to reclaim space. The current Follow Up Agent and its `~/.recruitment_agent` encrypted operational store were explicitly preserved. The old private GitHub repository remains pending deletion only because the current GitHub authentication lacks the `delete_repo` permission.

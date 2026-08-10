@@ -1,10 +1,12 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import type { RecordHeader } from '../types';
 import { StatusPill } from '../components/StatusPill';
 import { EmptyState } from '../components/LoadingState';
 import { IconSearch, IconWarning } from '../components/icons';
 import { getDisplayStatus, formatTimestamp } from '../utils/displayStatus';
 import { formatExactET } from '../utils/deadlineUtils';
+import { CustomDropdown } from '../components/CustomDropdown';
+import { playSound } from '../utils/audio';
 
 interface RecordsViewProps {
   records: RecordHeader[];
@@ -28,6 +30,28 @@ export function RecordsView({ records, onRecordClick, selectedRecordId, initialS
   const [page, setPage] = useState(1);
 
   const effectiveSearch = globalSearch || searchQuery;
+
+  const queueSearchRef = useRef<HTMLInputElement>(null);
+
+  // `/` key focuses queue search (only when not in an editable element)
+  useEffect(() => {
+    function handleSlash(e: KeyboardEvent) {
+      if (e.key !== '/') return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      const editable =
+        tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' ||
+        (e.target as HTMLElement)?.isContentEditable;
+      if (editable) return;
+
+      const el = queueSearchRef.current;
+      if (el) {
+        e.preventDefault();
+        el.focus();
+      }
+    }
+    document.addEventListener('keydown', handleSlash);
+    return () => document.removeEventListener('keydown', handleSlash);
+  }, []);
 
   const filtered = useMemo(() => {
     let result = [...records];
@@ -129,41 +153,49 @@ export function RecordsView({ records, onRecordClick, selectedRecordId, initialS
 
   return (
     <div className="view-enter records-view" data-layer="Work Queue / Frame">
+      {/* Section header */}
+      <div className="rq-header">
+        <h1 className="rq-title">Work Queue</h1>
+        <span className="rq-badge" aria-label={`${records.length} total records`}>{records.length}</span>
+      </div>
+
       {/* Toolbar */}
       <div className="records-toolbar" role="toolbar" aria-label="Record filters" data-layer="Work Queue / Filters">
         <div className="records-toolbar-left">
           <div className="records-search-wrap">
             <span className="records-search-icon"><IconSearch size={14} /></span>
             <input
+              ref={queueSearchRef}
               type="search"
               className="records-search"
-              placeholder="Filter queue by name, Job ID, customer…"
+              placeholder={`Filter ${records.length} records by name, Job ID, customer…`}
               value={searchQuery}
               onChange={e => { setSearchQuery(e.target.value); setPage(1); }}
-              aria-label="Filter records"
+              aria-label="Filter queue records"
             />
+            <kbd className="records-kbd-hint" aria-hidden="true">/</kbd>
           </div>
 
-          <select
-            className="records-select"
+          <CustomDropdown
+            options={[
+              { value: 'all', label: 'All Statuses' },
+              ...statusOptions.map(s => ({ value: s, label: s })),
+            ]}
             value={statusFilter}
-            onChange={e => { setStatusFilter(e.target.value); setPage(1); }}
-            aria-label="Filter by status"
-          >
-            <option value="all">All Statuses</option>
-            {statusOptions.map(s => <option key={s} value={s}>{s}</option>)}
-          </select>
+            onChange={val => { setStatusFilter(val); setPage(1); }}
+            ariaLabel="Filter by status"
+          />
 
-          <select
-            className="records-select"
+          <CustomDropdown
+            options={[
+              { value: 'all', label: 'All Records' },
+              { value: 'complete', label: 'Complete' },
+              { value: 'incomplete', label: 'Incomplete' },
+            ]}
             value={completenessFilter}
-            onChange={e => { setCompletenessFilter(e.target.value as 'all' | 'complete' | 'incomplete'); setPage(1); }}
-            aria-label="Filter by completeness"
-          >
-            <option value="all">All Records</option>
-            <option value="complete">Complete</option>
-            <option value="incomplete">Incomplete</option>
-          </select>
+            onChange={val => { setCompletenessFilter(val as 'all' | 'complete' | 'incomplete'); setPage(1); }}
+            ariaLabel="Filter by completeness"
+          />
 
           {hasFilters && (
             <button className="btn btn-ghost btn-sm" onClick={clearFilters}>
@@ -178,6 +210,7 @@ export function RecordsView({ records, onRecordClick, selectedRecordId, initialS
           </span>
         </div>
       </div>
+
 
       {/* Table */}
       {filtered.length === 0 ? (
@@ -227,8 +260,8 @@ export function RecordsView({ records, onRecordClick, selectedRecordId, initialS
                     key={r.id}
                     className={`records-row ${selectedRecordId === r.id ? 'records-row-selected' : ''}`}
                     data-record-id={r.id}
-                    onClick={() => onRecordClick(r.id)}
-                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onRecordClick(r.id); } }}
+                    onClick={() => { playSound('click'); onRecordClick(r.id); }}
+                    onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); playSound('click'); onRecordClick(r.id); } }}
                     tabIndex={0}
                     role="row"
                     aria-label={`Record: ${r.candidate_name || 'Unknown'}`}
@@ -236,19 +269,19 @@ export function RecordsView({ records, onRecordClick, selectedRecordId, initialS
                     <td className="col-status">
                       <StatusPill domainStatus={r.domain_status} threadMessageCount={r.thread_message_count} size="sm" />
                     </td>
-                    <td className="col-candidate cell-primary" title={r.candidate_name || undefined}>{r.candidate_name || '—'}</td>
-                    <td className="col-requirement cell-secondary" title={r.skill || undefined}>{r.skill || '—'}</td>
-                    <td className="col-customer cell-secondary hide-narrow" title={r.customer || undefined}>{r.customer || '—'}</td>
+                    <td className="col-candidate cell-primary" title={r.candidate_name || undefined} aria-label={r.candidate_name || '—'}>{r.candidate_name || '—'}</td>
+                    <td className="col-requirement cell-secondary" title={r.skill || undefined} aria-label={r.skill || '—'}>{r.skill || '—'}</td>
+                    <td className="col-customer cell-secondary hide-narrow" title={r.customer || undefined} aria-label={r.customer || '—'}>{r.customer || '—'}</td>
                     <td className="col-jobid cell-mono hide-narrow">
                       {r.job_id || '—'}
                       {r.source_content_warning && (
-                        <span className="cell-warning-icon" title="Source content conflict — Job IDs differ between subject and body">
+                        <span className="cell-warning-icon" title="Source content conflict — Job IDs differ between subject and body" aria-label="Source content conflict — Job IDs differ between subject and body">
                           <IconWarning size={13} />
                         </span>
                       )}
                     </td>
-                    <td className="col-location cell-secondary hide-tablet" title={r.location || undefined}>{r.location || '—'}</td>
-                    <td className="col-updated cell-dim" title={formatExactET(r.latest_logical_timestamp || r.received_at)}>{formatTimestamp(r.latest_logical_timestamp || r.received_at)}</td>
+                    <td className="col-location cell-secondary hide-tablet" title={r.location || undefined} aria-label={r.location || '—'}>{r.location || '—'}</td>
+                    <td className="col-updated cell-dim" title={formatExactET(r.latest_logical_timestamp || r.received_at)} aria-label={`Last update: ${formatExactET(r.latest_logical_timestamp || r.received_at) || formatTimestamp(r.latest_logical_timestamp || r.received_at)}`}>{formatTimestamp(r.latest_logical_timestamp || r.received_at)}</td>
                   </tr>
                 ))}
               </tbody>

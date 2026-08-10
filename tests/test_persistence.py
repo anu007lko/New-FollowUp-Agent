@@ -66,3 +66,58 @@ def test_idempotent_upsert_and_duplicate_prevention(temp_persistence):
     records = engine.list_records()
     assert len(records) == 1
     assert records[0].graph_immutable_id == graph_immutable_id
+
+def test_timeline_unique_body_fallback(temp_persistence):
+    """Verify that uniqueBody.content is preferred for timeline body_preview, falling back to bodyPreview."""
+    engine = temp_persistence
+    
+    # We will test the static method _linked_message_to_timeline
+    from backend.app.infrastructure.persistence import EncryptedPersistenceEngine
+    
+    mock_messages = [
+        {
+            "id": "msg-1",
+            "internetMessageId": "<msg-1@test.com>",
+            "sentDateTime": "2026-08-07T10:00:00Z",
+            "from": {"emailAddress": {"address": "test@test.com"}},
+            "bodyPreview": "Short preview...",
+            "uniqueBody": {"content": "This is the unique body."}
+        },
+        {
+            "id": "msg-2",
+            "internetMessageId": "<msg-2@test.com>",
+            "sentDateTime": "2026-08-07T10:05:00Z",
+            "from": {"emailAddress": {"address": "test@test.com"}},
+            "bodyPreview": "Fallback preview...",
+            # uniqueBody missing
+        },
+        {
+            "id": "msg-3",
+            "internetMessageId": "<msg-3@test.com>",
+            "sentDateTime": "2026-08-07T10:10:00Z",
+            "from": {"emailAddress": {"address": "test@test.com"}},
+            "bodyPreview": "Another fallback preview...",
+            "uniqueBody": {"content": ""}  # uniqueBody empty
+        },
+        {
+            "id": "msg-4",
+            "internetMessageId": "<msg-4@test.com>",
+            "sentDateTime": "2026-08-07T10:15:00Z",
+            "from": {"emailAddress": {"address": "test@test.com"}},
+            "bodyPreview": "Whitespace fallback preview...",
+            "uniqueBody": {"content": "   \n\t "}  # uniqueBody whitespace only
+        }
+    ]
+    
+    timeline = engine._build_timeline_from_thread_messages(
+        record_id="rec-001",
+        conversation_id="conv-001",
+        thread_messages=mock_messages,
+        role="original_submission"
+    )
+    
+    assert len(timeline) == 4
+    assert timeline[0].body_preview == "This is the unique body."
+    assert timeline[1].body_preview == "Fallback preview..."
+    assert timeline[2].body_preview == "Another fallback preview..."
+    assert timeline[3].body_preview == "Whitespace fallback preview..."

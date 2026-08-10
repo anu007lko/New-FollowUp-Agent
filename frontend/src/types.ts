@@ -25,6 +25,11 @@ export interface RecordHeader {
   feedback_due_at?: string;
   interview_state?: string;
   interview_updated_at?: string;
+  interview_date?: string;
+  interview_time?: string;
+  interview_timezone?: string;
+  timezone_source?: string;
+  confidence_label?: string;
 }
 
 export interface TimelineEntry {
@@ -41,6 +46,7 @@ export interface TimelineEntry {
   graph_immutable_id?: string; // internal: never display, used for Original Submission match
   conversation_id?: string;
   role?: string;
+  event_type?: string;
 }
 
 export interface StructuredEvidence {
@@ -50,6 +56,12 @@ export interface StructuredEvidence {
   timer_anchor_timestamp?: string;
   latest_logical_timestamp?: string;
   logical_messages_evaluated: number;
+  interview_date?: string;
+  interview_time?: string;
+  timezone?: string;
+  timezone_source?: string;
+  confidence_label?: string;
+  supporting_message_ids?: string[];
 }
 
 export interface LinkedConversation {
@@ -94,6 +106,11 @@ export interface FullRecord {
   interview_state?: string;
   interview_updated_at?: string;
   feedback_due_at?: string;
+  interview_date?: string;
+  interview_time?: string;
+  interview_timezone?: string;
+  timezone_source?: string;
+  confidence_label?: string;
   manager_notes: string;
   system_notes: string;
   close_reason?: string;

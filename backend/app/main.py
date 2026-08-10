@@ -70,6 +70,10 @@ if os.path.exists(dist_dir):
     def serve_icon_sprite():
         return FileResponse(os.path.join(dist_dir, "icons.svg"), media_type="image/svg+xml")
 
+    @app.get("/clifyx-logo.png", response_class=FileResponse, include_in_schema=False)
+    def serve_clifyx_logo():
+        return FileResponse(os.path.join(dist_dir, "clifyx-logo.png"), media_type="image/png")
+
     @app.get("/", response_class=FileResponse)
     def serve_frontend_root():
         return FileResponse(os.path.join(dist_dir, "index.html"))

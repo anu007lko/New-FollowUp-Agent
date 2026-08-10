@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { IconMoreHorizontal } from './icons';
+import { playSound } from '../utils/audio';
 
 interface OverflowItem {
   label: string;
@@ -67,7 +68,7 @@ export function OverflowMenu({ items }: OverflowMenuProps) {
       <button
         ref={triggerRef}
         className="overflow-trigger"
-        onClick={() => setOpen(o => !o)}
+        onClick={() => { playSound('click'); setOpen(o => !o); }}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-label="More actions"
@@ -82,7 +83,7 @@ export function OverflowMenu({ items }: OverflowMenuProps) {
               key={i}
               className={`overflow-item ${item.danger ? 'overflow-item-danger' : ''}`}
               role="menuitem"
-              onClick={() => { item.onClick(); close(); }}
+              onClick={() => { playSound('click'); item.onClick(); close(); }}
             >
               {item.label}
             </button>

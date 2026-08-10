@@ -1,5 +1,7 @@
 import type { ViewName } from '../types';
 import { IconDashboard, IconQueue, IconInterview, IconRetention, IconExpand, IconCollapse } from './icons';
+import { playSound } from '../utils/audio';
+import { SidebarBrandFooter } from './SidebarBrandFooter';
 
 interface SidebarProps {
   activeView: ViewName;
@@ -9,9 +11,10 @@ interface SidebarProps {
 }
 
 const NAV_ITEMS: { view: ViewName; label: string; Icon: typeof IconDashboard }[] = [
-  { view: 'dashboard',  label: 'Today',              Icon: IconDashboard },
-  { view: 'records',    label: 'Work Queue',          Icon: IconQueue },
-  { view: 'interviews', label: 'Interviews',          Icon: IconInterview },
+  { view: 'dashboard',  label: 'Today',                  Icon: IconDashboard },
+  { view: 'records',    label: 'Work Queue',              Icon: IconQueue },
+  { view: 'interviews', label: 'Interviews',              Icon: IconInterview },
+  { view: 'retention',  label: 'Retention & Operations',  Icon: IconRetention },
 ];
 
 export function Sidebar({ activeView, collapsed, onNavigate, onToggle }: SidebarProps) {
@@ -24,7 +27,7 @@ export function Sidebar({ activeView, collapsed, onNavigate, onToggle }: Sidebar
         </div>
         <button
           className="sidebar-toggle"
-          onClick={onToggle}
+          onClick={() => { playSound('click'); onToggle(); }}
           aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
           title={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
@@ -37,7 +40,7 @@ export function Sidebar({ activeView, collapsed, onNavigate, onToggle }: Sidebar
           <button
             key={item.view}
             className={`sidebar-item ${activeView === item.view ? 'sidebar-item-active' : ''}`}
-            onClick={() => onNavigate(item.view)}
+            onClick={() => { playSound('click'); onNavigate(item.view); }}
             aria-current={activeView === item.view ? 'page' : undefined}
             title={collapsed ? item.label : undefined}
             aria-label={collapsed ? item.label : undefined}
@@ -48,30 +51,7 @@ export function Sidebar({ activeView, collapsed, onNavigate, onToggle }: Sidebar
         ))}
       </nav>
 
-      <div className="sidebar-footer" data-layer="Navigation / Footer">
-        {!collapsed ? (
-          <>
-            <div className="figma-outlook-card" data-layer="Status / Outlook Drafts">
-              <span className="figma-outlook-icon">O</span>
-              <p>Drafts open<br />in Outlook.</p>
-              <small>You send<br />manually.</small>
-            </div>
-            <button
-              className={`sidebar-ops-link ${activeView === 'retention' ? 'active' : ''}`}
-              onClick={() => onNavigate('retention')}
-            >
-              <IconRetention size={15} />
-              Retention & operations
-            </button>
-            <div className="figma-prism" aria-hidden="true" data-layer="Decoration / Prism" />
-            <span className="sr-only">Ready for daily review · Local actions available · Email sending disabled</span>
-          </>
-        ) : (
-          <div title="Ready for daily review" style={{ textAlign: 'center' }}>
-            <span className="sidebar-health-dot" />
-          </div>
-        )}
-      </div>
+      <SidebarBrandFooter collapsed={collapsed} />
     </aside>
   );
 }

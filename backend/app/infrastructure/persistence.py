@@ -650,9 +650,13 @@ class EncryptedPersistenceEngine:
             sender_info = msg.get("from", {}).get("emailAddress", {})
             sender = sender_info.get("address", "unknown")
             timestamp = _get_msg_ts(msg)
-            body_preview = msg.get("bodyPreview", "")
-            if len(body_preview) > 250:
-                body_preview = body_preview[:250] + "..."
+            unique_body = msg.get("uniqueBody", {}).get("content", "").strip()
+            if unique_body:
+                body_preview = unique_body
+            else:
+                body_preview = msg.get("bodyPreview", "").strip()
+                if len(body_preview) > 250:
+                    body_preview = body_preview[:250] + "..."
 
             to_recips = [
                 r.get("emailAddress", {}).get("address", "")

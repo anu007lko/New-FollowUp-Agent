@@ -27,7 +27,7 @@ from backend.app.domain.models import (
 from backend.app.domain.date_utils import TIMEZONE_NEW_YORK, TIMEZONE_UTC
 from backend.app.application.services import ConfigService, SecurityService
 from backend.app.application.import_service import ImportService
-from backend.app.application.daily_review_engine import DailyReviewEngine
+from backend.app.application.daily_review_engine import DailyReviewEngine, SingleRecordRefreshStatus
 from backend.app.application.workflow_engine import (
     validate_interview_transition, compute_domain_status_after_interview,
     compute_feedback_due_at, validate_close_action, append_manager_note,
@@ -171,6 +171,24 @@ def run_daily_review():
     """
     result = daily_review_engine.run_daily_review(is_catchup=False)
     return result.to_dict()
+
+
+@router.post("/api/v1/records/{record_id}/refresh", response_model=SubmissionRecord, tags=["Daily Review"])
+def refresh_single_record_api(record_id: str):
+    """
+    Refresh exactly one existing record from Graph and update its timeline/status locally.
+    Does not import new submissions or iterate other records.
+    """
+    result = daily_review_engine.refresh_single_record(record_id)
+    if result.status == SingleRecordRefreshStatus.NOT_FOUND:
+        raise HTTPException(status_code=404, detail="Record not found")
+    elif result.status == SingleRecordRefreshStatus.REFRESH_DISABLED:
+        raise HTTPException(status_code=503, detail="Graph refresh is disabled")
+    elif result.status == SingleRecordRefreshStatus.CONFLICT:
+        raise HTTPException(status_code=409, detail="Optimistic update conflict during record refresh")
+    elif result.status == SingleRecordRefreshStatus.SUCCESS and result.record:
+        return result.record
+    raise HTTPException(status_code=500, detail="Internal error during record refresh")
 
 
 @router.get("/api/v1/daily-review/status", tags=["Daily Review"])
@@ -1022,7 +1040,7 @@ def post_followup_decision(record_id: str, req: FollowUpDecisionRequest, manager
 @router.post("/api/v1/records/{record_id}/interview-confirmation", response_model=SubmissionRecord, tags=["Manager Actions"])
 def post_interview_confirmation(record_id: str, req: InterviewConfirmationRequest, manager_identity: str = Depends(get_trusted_manager_identity)):
     """Record manager interview confirmation decision (completed, rescheduled, cancelled, not_confirmed)."""
-    valid_choices = {"completed", "rescheduled", "cancelled", "not_confirmed"}
+    valid_choices = {"completed", "rescheduled", "cancelled", "not_confirmed", "scheduled"}
     if req.choice not in valid_choices:
         raise HTTPException(status_code=400, detail=f"Invalid choice '{req.choice}'. Must be one of {valid_choices}")
 
@@ -1038,13 +1056,48 @@ def post_interview_confirmation(record_id: str, req: InterviewConfirmationReques
         payload["feedback_due_at"] = due_at
         target_status = DomainStatus.AWAITING_FEEDBACK.value
         audit_msg = f"Interview confirmed completed. 48h feedback timer started (due {due_at})."
+    elif req.choice == "scheduled":
+        payload["interview_state"] = InterviewState.SCHEDULED.value
+        payload["interview_updated_at"] = now_iso
+        if req.new_date:
+            payload["interview_date"] = req.new_date
+        if req.new_time:
+            payload["interview_time"] = req.new_time
+        if req.timezone:
+            payload["interview_timezone"] = req.timezone
+        if req.new_date and req.new_time:
+            try:
+                dt_str = f"{req.new_date}T{req.new_time}:00"
+                dt = datetime.fromisoformat(dt_str)
+                if req.timezone:
+                    from zoneinfo import ZoneInfo
+                    try:
+                        dt = dt.replace(tzinfo=ZoneInfo(req.timezone))
+                    except Exception:
+                        pass
+                payload["interview_datetime"] = dt.isoformat()
+            except Exception:
+                pass
+        target_status = DomainStatus.INTERVIEW_REQUEST_SCHEDULED.value
+        payload["manager_outcome_category"] = "Interview Scheduled"
+
+        source_desc = getattr(req, "source", None) or ("Scheduled from calendar invite" if "calendar" in (payload.get("timezone_source") or "").lower() else ("Scheduled from thread" if req.new_date and not getattr(req, "source", None) else "Scheduled manually"))
+        date_str = f" for {req.new_date} {req.new_time or ''} ({req.timezone or 'America/New_York'})".rstrip() if req.new_date else ""
+        audit_msg = f"Interview Scheduled: {source_desc}{date_str}."
     elif req.choice == "rescheduled":
-        if not req.new_date or not req.new_time:
-            raise HTTPException(status_code=400, detail="Rescheduled choice requires new_date and new_time.")
+        if not req.new_date:
+            raise HTTPException(status_code=400, detail="Rescheduled choice requires a new date.")
         payload["interview_state"] = InterviewState.RESCHEDULED.value
         payload["interview_updated_at"] = now_iso
+        if req.new_date:
+            payload["interview_date"] = req.new_date
+        if req.new_time:
+            payload["interview_time"] = req.new_time
+        if req.timezone:
+            payload["interview_timezone"] = req.timezone
         tz = req.timezone or "America/New_York"
-        audit_msg = f"Interview rescheduled for {req.new_date} {req.new_time} ({tz})."
+        time_desc = f" {req.new_time}" if req.new_time else ""
+        audit_msg = f"Interview rescheduled for {req.new_date}{time_desc} ({tz})."
     elif req.choice == "cancelled":
         payload["interview_state"] = InterviewState.CANCELLED.value
         payload["interview_updated_at"] = now_iso

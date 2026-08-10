@@ -189,6 +189,12 @@ class StructuredEvidence(BaseModel):
     timer_anchor_timestamp: Optional[str] = None
     latest_logical_timestamp: Optional[str] = None
     logical_messages_evaluated: int = 0
+    interview_date: Optional[str] = None
+    interview_time: Optional[str] = None
+    timezone: Optional[str] = None
+    timezone_source: Optional[str] = None
+    confidence_label: Optional[str] = None
+    supporting_message_ids: List[str] = Field(default_factory=list)
 
 
 class LinkedConversationRole(str, Enum):
@@ -242,6 +248,11 @@ class SubmissionRecord(BaseModel):
     record_version: int = 1
     interview_state: Optional[InterviewState] = None
     interview_datetime: Optional[str] = None
+    interview_date: Optional[str] = None
+    interview_time: Optional[str] = None
+    interview_timezone: Optional[str] = None
+    timezone_source: Optional[str] = None
+    confidence_label: Optional[str] = None
     interview_updated_at: Optional[str] = None
     feedback_due_at: Optional[str] = None
     manager_notes: str = ""
@@ -317,10 +328,11 @@ class FollowUpDecisionRequest(BaseManagerActionRequest):
 
 
 class InterviewConfirmationRequest(BaseManagerActionRequest):
-    choice: str  # "completed", "rescheduled", "cancelled", "not_confirmed"
+    choice: str  # "completed", "rescheduled", "cancelled", "not_confirmed", "scheduled"
     new_date: Optional[str] = None
     new_time: Optional[str] = None
     timezone: Optional[str] = None
+    source: Optional[str] = None
 
 
 class InterviewScheduleRequest(BaseManagerActionRequest):

@@ -50,11 +50,16 @@ The target design is the connected file **Delegatlabs** (`Yb1ECfpSNIMLk53ASiKcKE
 - Keep production flags aligned with the Operations Runbook: Graph and drafts only when intentionally enabled; `MAIL_SEND_ENABLED=False` always.
 - Before any production configuration or data change, create and authenticate an encrypted backup and use the prescribed test/release gate.
 - Restore only through quarantine and with explicit approval.
-- Keep the legacy service on port 8765 untouched.
+- The obsolete legacy service on port 8765 was retired on 2026-08-09; the current app does not use that port.
 
 ## Remaining item
 
-Only the external Figma save is pending because of the free-plan connector quota. There is no unresolved functional product decision in this handoff.
+Two external-account actions remain pending:
+
+- The final Figma write-back is pending because of the free-plan connector quota.
+- The old private GitHub repository `anu007lko/outlook-followup-agent` could not be deleted because the active GitHub authentication lacks the `delete_repo` permission. Its verified local runtime, launch item, local databases, logs, old project/snapshot folders, three exclusively old Antigravity task histories, deployment templates, and listener on port 8765 were removed on 2026-08-09. The current Follow Up Agent and `~/.recruitment_agent` were preserved.
+
+There is no unresolved functional product decision in this handoff.
 
 ## Primary references
 

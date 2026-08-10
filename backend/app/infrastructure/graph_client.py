@@ -69,7 +69,7 @@ class MicrosoftGraphClient:
 
         headers = {
             "Authorization": f"Bearer {token}",
-            "Prefer": 'IdType="ImmutableId"',
+            "Prefer": 'IdType="ImmutableId", outlook.body-content-type="text"',
             "Accept": "application/json"
         }
 
@@ -106,7 +106,7 @@ class MicrosoftGraphClient:
                 messages_url = (
                     f"https://graph.microsoft.com/v1.0/me/mailFolders/{target_folder_id}/messages"
                     f"?$filter=receivedDateTime ge {start_date_utc}"
-                    f"&$select=id,conversationId,internetMessageId,subject,sentDateTime,receivedDateTime,from,toRecipients,ccRecipients,hasAttachments,bodyPreview"
+                    f"&$select=id,conversationId,internetMessageId,subject,sentDateTime,receivedDateTime,from,toRecipients,ccRecipients,hasAttachments,bodyPreview,uniqueBody"
                     f"&$top={top}"
                 )
 
@@ -143,14 +143,14 @@ class MicrosoftGraphClient:
             return [], auth_status, diagnostics
         headers = {
             "Authorization": f"Bearer {token}",
-            "Prefer": 'IdType="ImmutableId"',
+            "Prefer": 'IdType="ImmutableId", outlook.body-content-type="text"',
             "Accept": "application/json",
         }
         next_url: Optional[str] = (
             "https://graph.microsoft.com/v1.0/me/messages"
             f"?$filter=receivedDateTime ge {start_date_utc}"
             "&$select=id,conversationId,internetMessageId,subject,sentDateTime,"
-            "receivedDateTime,from,toRecipients,ccRecipients,replyTo,hasAttachments,bodyPreview"
+            "receivedDateTime,from,toRecipients,ccRecipients,replyTo,hasAttachments,bodyPreview,uniqueBody"
             f"&$top={top}"
         )
         messages: List[Dict[str, Any]] = []
@@ -177,14 +177,14 @@ class MicrosoftGraphClient:
         safe_conversation_id = conversation_id.replace("'", "''")
         headers = {
             "Authorization": f"Bearer {token}",
-            "Prefer": 'IdType="ImmutableId"',
+            "Prefer": 'IdType="ImmutableId", outlook.body-content-type="text"',
             "Accept": "application/json",
         }
         next_url: Optional[str] = (
             "https://graph.microsoft.com/v1.0/me/messages"
             f"?$filter=conversationId eq '{safe_conversation_id}'"
             "&$select=id,conversationId,internetMessageId,subject,sentDateTime,"
-            "receivedDateTime,from,toRecipients,ccRecipients,replyTo,hasAttachments,bodyPreview,parentFolderId"
+            "receivedDateTime,from,toRecipients,ccRecipients,replyTo,hasAttachments,bodyPreview,uniqueBody,parentFolderId"
             "&$expand=attachments($select=id,name,contentType,size,isInline)"
             f"&$top={top}"
         )

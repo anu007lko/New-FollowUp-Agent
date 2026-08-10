@@ -7,12 +7,13 @@ import { ManagerActionModals } from '../components/ManagerActionModals';
 import { IconBack, IconClose, IconWarning, IconChevronRight } from '../components/icons';
 import { formatTimestamp } from '../utils/displayStatus';
 import { getTimelineInfo, isAutomaticReply, collectParticipants, formatDueStatus } from '../utils/timelineClassifier';
+import { playSound } from '../utils/audio';
 
 interface RecordWorkspaceProps {
   record: FullRecord | null;
   loading: boolean;
   onClose: () => void;
-  onRefreshRecord?: () => Promise<FullRecord | void>;
+  onRefreshRecord: (recordId: string) => Promise<FullRecord | void>;
 }
 
 type PanelTab = 'overview' | 'conversation' | 'notes' | 'details';
@@ -26,6 +27,8 @@ export function RecordWorkspace({ record, loading, onClose, onRefreshRecord }: R
   const [selectedLinked, setSelectedLinked] = useState<LinkedConversation | null>(null);
   const [conflictAcknowledged, setConflictAcknowledged] = useState(false);
   const [draftCreationAvailable, setDraftCreationAvailable] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [refreshMessage, setRefreshMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
 
   // Collapsed detail sections
   const [showParticipants, setShowParticipants] = useState(false);
@@ -47,6 +50,7 @@ export function RecordWorkspace({ record, loading, onClose, onRefreshRecord }: R
   useEffect(() => {
     setActiveTab('overview');
     setConflictAcknowledged(false);
+    setRefreshMessage(null);
   }, [record?.id]);
 
   useEffect(() => {
@@ -75,6 +79,53 @@ export function RecordWorkspace({ record, loading, onClose, onRefreshRecord }: R
 
   if (!record) return null;
 
+  const handleRefreshThread = async () => {
+    if (refreshing || !record) return;
+    const targetRecordId = record.id;
+    setRefreshing(true);
+    setRefreshMessage(null);
+
+    try {
+      const csrfRes = await fetch('/api/v1/session/csrf-token', { method: 'POST' });
+      if (!csrfRes.ok) {
+        setRefreshMessage({ type: 'error', text: 'Could not refresh the thread. Please try again.' });
+        return;
+      }
+      const csrfData = await csrfRes.json();
+      const csrfToken = csrfData?.csrf_token;
+      if (!csrfToken) {
+        setRefreshMessage({ type: 'error', text: 'Could not refresh the thread. Please try again.' });
+        return;
+      }
+
+      const res = await fetch(`/api/v1/records/${targetRecordId}/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': csrfToken,
+        },
+      });
+
+      if (res.status === 200) {
+        playSound('refresh');
+        await onRefreshRecord(targetRecordId);
+        setRefreshMessage({ type: 'success', text: 'Thread refreshed' });
+      } else if (res.status === 404) {
+        setRefreshMessage({ type: 'error', text: 'This record is no longer available.' });
+      } else if (res.status === 409) {
+        setRefreshMessage({ type: 'error', text: 'This record changed while refreshing. Please try again.' });
+      } else if (res.status === 503) {
+        setRefreshMessage({ type: 'error', text: 'Thread refresh is currently disabled.' });
+      } else {
+        setRefreshMessage({ type: 'error', text: 'Could not refresh the thread. Please try again.' });
+      }
+    } catch {
+      setRefreshMessage({ type: 'error', text: 'Could not refresh the thread. Please try again.' });
+    } finally {
+      setRefreshing(false);
+    }
+  };
+
   const toggleEntry = (id: string) => {
     setExpandedEntries(prev => {
       const next = new Set(prev);
@@ -98,8 +149,16 @@ export function RecordWorkspace({ record, loading, onClose, onRefreshRecord }: R
   // Separate real messages from system notes
   const realMessages = uniqueTimeline.filter(e => !e.is_system_note);
   const systemNotes = uniqueTimeline.filter(e => e.is_system_note);
-  const latestMessageEntry = realMessages.length > 0 ? realMessages[realMessages.length - 1] : null;
-  const latestInfo = latestMessageEntry ? getTimelineInfo(latestMessageEntry, record) : null;
+
+  // Determine newest message by actual timestamp, not array order
+  const newestMessageEntry = realMessages.length > 0
+    ? [...realMessages].sort((a, b) => {
+        const ta = new Date(a.timestamp || 0).getTime();
+        const tb = new Date(b.timestamp || 0).getTime();
+        return tb - ta;
+      })[0]
+    : null;
+  const newestInfo = newestMessageEntry ? getTimelineInfo(newestMessageEntry, record) : null;
 
   // Sorted messages for conversation tab
   const sortedMessages = newestFirst ? [...realMessages].reverse() : realMessages;
@@ -121,12 +180,35 @@ export function RecordWorkspace({ record, loading, onClose, onRefreshRecord }: R
         {/* Header */}
         <div className="panel-header" data-layer="Record Workspace / Header">
           <div className="panel-header-actions">
-            <button className="panel-back" onClick={onClose} aria-label="Back to records">
+            <button className="panel-back" onClick={() => { playSound('click'); onClose(); }} aria-label="Back to records">
               <IconBack size={16} /> Back
             </button>
-            <button className="panel-close-btn" onClick={onClose} aria-label="Close panel" title="Close">
-              <IconClose size={14} />
-            </button>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                className="panel-refresh-btn"
+                onClick={handleRefreshThread}
+                disabled={refreshing}
+                aria-label="Refresh Thread"
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: '4px',
+                  fontSize: '0.8125rem',
+                  padding: '4px 10px',
+                  borderRadius: 'var(--radius-sm, 4px)',
+                  border: '1px solid var(--border-default)',
+                  background: 'var(--bg-secondary, #1e293b)',
+                  color: 'var(--text-primary, #f8fafc)',
+                  cursor: refreshing ? 'not-allowed' : 'pointer',
+                  opacity: refreshing ? 0.6 : 1,
+                }}
+              >
+                {refreshing ? 'Refreshing...' : 'Refresh Thread'}
+              </button>
+              <button className="panel-close-btn" onClick={() => { playSound('click'); onClose(); }} aria-label="Close panel" title="Close">
+                <IconClose size={14} />
+              </button>
+            </div>
           </div>
           <div className="panel-header-info">
             <div className="panel-header-top">
@@ -159,7 +241,7 @@ export function RecordWorkspace({ record, loading, onClose, onRefreshRecord }: R
               className={`panel-tab ${activeTab === tab.key ? 'panel-tab-active' : ''}`}
               role="tab"
               aria-selected={activeTab === tab.key}
-              onClick={() => setActiveTab(tab.key)}
+              onClick={() => { playSound('click'); setActiveTab(tab.key); }}
             >
               {tab.label}
             </button>
@@ -168,6 +250,23 @@ export function RecordWorkspace({ record, loading, onClose, onRefreshRecord }: R
 
         {/* Body — only this scrolls */}
         <div className="panel-body" role="tabpanel">
+          {/* Refresh feedback notice */}
+          {refreshMessage && (
+            <div
+              className={`panel-notice ${refreshMessage.type === 'success' ? 'panel-notice-info' : 'panel-notice-warn'}`}
+              style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+            >
+              <span>{refreshMessage.text}</span>
+              <button
+                onClick={() => setRefreshMessage(null)}
+                style={{ background: 'none', border: 'none', color: 'inherit', cursor: 'pointer', fontSize: '0.75rem', padding: '0 4px' }}
+                aria-label="Dismiss notice"
+              >
+                ✕
+              </button>
+            </div>
+          )}
+
           {/* Notices (shown on all tabs) */}
           {record.is_operational_record_only && (
             <div className="panel-notice panel-notice-info">
@@ -207,36 +306,96 @@ export function RecordWorkspace({ record, loading, onClose, onRefreshRecord }: R
                 </div>
               )}
 
-              {/* Latest Update */}
+              {/* Latest Message Preview */}
               <section className="panel-section">
                 <h3 className="panel-section-title">Latest Update</h3>
-                <div className="panel-status-card">
-                  <div className="panel-status-main">
-                    {record.latest_update || 'No updates available'}
+                <LatestMessagePreview
+                  record={record}
+                  newestEntry={newestMessageEntry}
+                  newestInfo={newestInfo}
+                />
+
+                {/* Timers */}
+                {record.interview_updated_at && (
+                  <div className="panel-status-timer">
+                    Interview Confirmed: {formatTimestamp(record.interview_updated_at)}
                   </div>
-                  <div className="panel-status-meta">
-                    {latestInfo && <span className="panel-status-direction">{latestInfo.label}</span>}
-                    {record.latest_sender && <span>{record.latest_sender}</span>}
-                    {record.latest_logical_timestamp && <span>{formatTimestamp(record.latest_logical_timestamp)}</span>}
+                )}
+                {record.feedback_due_at && (
+                  <div className="panel-status-timer">
+                    Feedback Due: {formatTimestamp(record.feedback_due_at)} ({formatDueStatus(record.feedback_due_at)})
                   </div>
-                  {record.interview_updated_at && (
-                    <div className="panel-status-timer">
-                      Interview Confirmed: {formatTimestamp(record.interview_updated_at)}
+                )}
+                {isClosed && record.close_reason && (
+                  <div className="panel-status-closed">
+                    Closed: {record.close_reason}
+                    {record.close_note ? ` — ${record.close_note}` : ''}
+                    {record.closed_at && <span className="panel-status-closed-at">{formatTimestamp(record.closed_at)}</span>}
+                  </div>
+                )}
+
+                {/* View conversation link */}
+                {realMessages.length > 0 && (
+                  <button
+                    className="btn btn-ghost btn-sm panel-view-conversation"
+                    onClick={() => setActiveTab('conversation')}
+                    aria-label="View full conversation"
+                  >
+                    View conversation →
+                  </button>
+                )}
+
+                {/* Detected Interview Schedule Box */}
+                {(record.interview_date || record.structured_evidence?.interview_date || record.confidence_label || record.structured_evidence?.confidence_label) && (
+                  <div
+                    className="panel-interview-details-box"
+                    style={{
+                      background: 'rgba(30, 41, 59, 0.6)',
+                      border: '1px solid rgba(56, 189, 248, 0.3)',
+                      borderRadius: '8px',
+                      padding: '12px 16px',
+                      margin: '12px 0',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <span style={{ fontSize: '0.85rem', fontWeight: 600, color: '#38bdf8' }}>Detected Interview Details</span>
+                      {(record.confidence_label || record.structured_evidence?.confidence_label) && (
+                        <span
+                          className="confidence-badge"
+                          style={{
+                            fontSize: '0.75rem',
+                            padding: '2px 8px',
+                            borderRadius: '12px',
+                            fontWeight: 600,
+                            background: (record.confidence_label || record.structured_evidence?.confidence_label || '').includes('conflict')
+                              ? 'rgba(239, 68, 68, 0.2)'
+                              : (record.confidence_label || record.structured_evidence?.confidence_label || '').includes('Confirmed')
+                              ? 'rgba(16, 185, 129, 0.2)'
+                              : 'rgba(245, 158, 11, 0.2)',
+                            color: (record.confidence_label || record.structured_evidence?.confidence_label || '').includes('conflict')
+                              ? '#fca5a5'
+                              : (record.confidence_label || record.structured_evidence?.confidence_label || '').includes('Confirmed')
+                              ? '#6ee7b7'
+                              : '#fcd34d',
+                            border: '1px solid currentColor',
+                          }}
+                        >
+                          {record.confidence_label || record.structured_evidence?.confidence_label}
+                        </span>
+                      )}
                     </div>
-                  )}
-                  {record.feedback_due_at && (
-                    <div className="panel-status-timer">
-                      Feedback Due: {formatTimestamp(record.feedback_due_at)} ({formatDueStatus(record.feedback_due_at)})
-                    </div>
-                  )}
-                  {isClosed && record.close_reason && (
-                    <div className="panel-status-closed">
-                      Closed: {record.close_reason}
-                      {record.close_note ? ` — ${record.close_note}` : ''}
-                      {record.closed_at && <span className="panel-status-closed-at">{formatTimestamp(record.closed_at)}</span>}
-                    </div>
-                  )}
-                </div>
+                    {(record.interview_date || record.structured_evidence?.interview_date || record.interview_time || record.structured_evidence?.interview_time) && (
+                      <div style={{ fontSize: '0.9rem', color: '#f8fafc', marginBottom: '4px' }}>
+                        📅 <strong>Scheduled Slot:</strong> {record.interview_date || record.structured_evidence?.interview_date || 'Date TBD'} at {record.interview_time || record.structured_evidence?.interview_time || 'Time TBD'} {record.interview_timezone || record.structured_evidence?.timezone || ''}
+                      </div>
+                    )}
+                    {(record.timezone_source || record.structured_evidence?.timezone_source) && (
+                      <div style={{ fontSize: '0.75rem', color: '#94a3b8' }}>
+                        Timezone Source: {(record.timezone_source || record.structured_evidence?.timezone_source) === 'message_text' ? 'Detected from message' : 'Resolved via sender metadata'}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Why this status — disclosure card */}
                 {record.structured_evidence && (
@@ -265,6 +424,20 @@ export function RecordWorkspace({ record, loading, onClose, onRefreshRecord }: R
                           <span className="panel-evidence-label">Reason</span>
                           <span className="panel-evidence-value">{record.structured_evidence.reason_code}</span>
                         </div>
+                        {record.structured_evidence.confidence_label && (
+                          <div className="panel-evidence-row">
+                            <span className="panel-evidence-label">Evidence Confidence</span>
+                            <span className="panel-evidence-value">{record.structured_evidence.confidence_label}</span>
+                          </div>
+                        )}
+                        {record.structured_evidence.interview_date && (
+                          <div className="panel-evidence-row">
+                            <span className="panel-evidence-label">Detected Date/Time</span>
+                            <span className="panel-evidence-value">
+                              {record.structured_evidence.interview_date} {record.structured_evidence.interview_time || ''} {record.structured_evidence.timezone || ''}
+                            </span>
+                          </div>
+                        )}
                         <div className="panel-evidence-row">
                           <span className="panel-evidence-label">Messages Evaluated</span>
                           <span className="panel-evidence-value">{record.structured_evidence.logical_messages_evaluated}</span>
@@ -648,10 +821,18 @@ export function RecordWorkspace({ record, loading, onClose, onRefreshRecord }: R
             setSelectedSuggestion(null);
             setSelectedLinked(null);
           }}
-          onSuccessAction={() => {
-            if (onRefreshRecord) onRefreshRecord();
+          onSuccessAction={(endpoint, payloadData) => {
+            if (endpoint === 'outcome-decision' && payloadData?.outcome_category) {
+              const cat = payloadData.outcome_category;
+              if (cat === 'Rejection' || cat === 'Client Rejected') {
+                setRefreshMessage({ type: 'success', text: 'Rejection recorded. Close this record to complete the workflow.' });
+              } else if (cat === 'Position Closed') {
+                setRefreshMessage({ type: 'success', text: 'Position closure recorded. Close this record to complete the workflow.' });
+              }
+            }
+            onRefreshRecord(record.id);
           }}
-          onRefreshRecord={onRefreshRecord}
+          onRefreshRecord={() => onRefreshRecord(record.id)}
         />
       </aside>
     </>
@@ -672,29 +853,134 @@ function EmptyState({ icon, title, message }: { icon: string; title: string; mes
 
 const BODY_TRUNCATE = 280;
 
+/** Safely truncate legacy body previews at quoted-reply boundaries. */
+function cleanupLegacyBodyPreview(raw: string): string {
+  if (!raw) return '';
+  const boundaryRegex = /(?:^|\r?\n)(?:_{5,}\r?\n|-----Original Message-----\r?\n)?From:\s/i;
+  const match = raw.match(boundaryRegex);
+  
+  let cleaned = raw;
+  if (match && match.index !== undefined) {
+    cleaned = raw.substring(0, match.index);
+  }
+  
+  return cleaned.trim();
+}
+
+/** Determine message direction from timeline classification. */
+function getMessageDirection(info: { className: string; label: string }): 'sent' | 'received' | null {
+  if (info.className === 'timeline-sent' || info.className === 'timeline-followup') return 'sent';
+  if (info.className === 'timeline-inbound' || info.className === 'timeline-submission') return 'received';
+  return null;
+}
+
+/** Format sender for display: prefer the name part before @, fallback to full address. */
+function formatSenderDisplay(sender: string): string {
+  if (!sender) return '';
+  // If it's just an email, use the local part capitalised
+  const atIdx = sender.indexOf('@');
+  if (atIdx > 0 && !sender.includes(' ')) {
+    return sender.slice(0, atIdx).replace(/[._-]/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+  }
+  return sender;
+}
+
+function LatestMessagePreview({ record, newestEntry, newestInfo }: {
+  record: FullRecord;
+  newestEntry: TimelineEntry | null;
+  newestInfo: { className: string; label: string } | null;
+}) {
+  // Case 1: We have a timeline entry with a body_preview (legacy or unique)
+  if (newestEntry && newestEntry.body_preview) {
+    const direction = newestInfo ? getMessageDirection(newestInfo) : null;
+    const cleanedBody = cleanupLegacyBodyPreview(newestEntry.body_preview);
+    const truncated = cleanedBody.length > BODY_TRUNCATE
+      ? cleanedBody.slice(0, BODY_TRUNCATE) + '…'
+      : cleanedBody;
+
+    return (
+      <div className="panel-status-card" data-testid="overview-preview">
+        <div className="panel-status-meta">
+          {direction && (
+            <span className={`panel-direction-badge panel-direction-badge--${direction}`}>
+              {direction === 'sent' ? '↑ Sent' : '↓ Received'}
+            </span>
+          )}
+          {newestInfo && <span className="panel-status-direction">{newestInfo.label}</span>}
+          {newestEntry.sender && (
+            <span className="panel-status-sender">{formatSenderDisplay(newestEntry.sender)}</span>
+          )}
+          {newestEntry.timestamp && <span>{formatTimestamp(newestEntry.timestamp)}</span>}
+        </div>
+        <div className="panel-status-main">
+          {cleanedBody ? truncated : <span className="timeline-no-content">Full message content was not stored locally.</span>}
+        </div>
+      </div>
+    );
+  }
+
+  // Case 2: No timeline body, but record.latest_update exists — truncate headers as fallback
+  if (record.latest_update) {
+    const cleaned = cleanupLegacyBodyPreview(record.latest_update);
+    if (cleaned) {
+      return (
+        <div className="panel-status-card panel-status-card--fallback" data-testid="overview-preview-fallback">
+          <div className="panel-status-meta">
+            {record.latest_sender && <span>{record.latest_sender}</span>}
+            {record.latest_logical_timestamp && <span>{formatTimestamp(record.latest_logical_timestamp)}</span>}
+          </div>
+          <div className="panel-status-main">
+            {cleaned.length > BODY_TRUNCATE ? cleaned.slice(0, BODY_TRUNCATE) + '…' : cleaned}
+          </div>
+        </div>
+      );
+    }
+  }
+
+  // Case 3: Only metadata remains
+  return (
+    <div className="panel-status-card panel-status-card--empty" data-testid="overview-preview-empty">
+      <div className="panel-status-main">
+        Full message content was not stored locally.
+      </div>
+    </div>
+  );
+}
+
 function TimelineItem({ entry, record, expanded, onToggle }: {
   entry: TimelineEntry; record: FullRecord; expanded: boolean; onToggle: () => void
 }) {
   const info = getTimelineInfo(entry, record);
-  const body = entry.body_preview || '';
+  const direction = getMessageDirection(info);
+  const rawBody = entry.body_preview || '';
+  const body = cleanupLegacyBodyPreview(rawBody);
   const needsTruncate = body.length > BODY_TRUNCATE;
   const displayBody = expanded || !needsTruncate ? body : body.slice(0, BODY_TRUNCATE) + '…';
 
   return (
-    <div className={`timeline-entry ${info.className}`}>
+    <div className={`timeline-entry ${info.className}`} data-testid="timeline-message">
       <div className="timeline-entry-header">
+        {direction && (
+          <span className={`timeline-direction-badge timeline-direction-badge--${direction}`} aria-label={direction === 'sent' ? 'Sent message' : 'Received message'}>
+            {direction === 'sent' ? '↑' : '↓'}
+          </span>
+        )}
         <span className="timeline-entry-label">{info.label}</span>
-        <span className="timeline-entry-sender">{entry.sender}</span>
+        <span className="timeline-entry-sender" title={entry.sender}>{formatSenderDisplay(entry.sender)}</span>
         <span className="timeline-entry-time">{formatTimestamp(entry.timestamp)}</span>
       </div>
-      {body && (
+      {body ? (
         <div className="timeline-entry-body">
           <p>{displayBody}</p>
           {needsTruncate && (
-            <button className="timeline-toggle" onClick={onToggle}>
+            <button className="timeline-toggle" onClick={onToggle} aria-expanded={expanded}>
               {expanded ? 'Show less' : 'Show more'}
             </button>
           )}
+        </div>
+      ) : (
+        <div className="timeline-entry-body timeline-entry-body--empty">
+          <p className="timeline-no-content">Full message content was not stored locally.</p>
         </div>
       )}
     </div>
@@ -704,7 +990,18 @@ function TimelineItem({ entry, record, expanded, onToggle }: {
 function getRecommendedAction(record: FullRecord): string | null {
   const ds = record.domain_status;
   if (ds === 'PendingFollowUp') return 'This submission is due for follow-up. Send a follow-up or close if no longer relevant.';
-  if (ds === 'ManagerActionRequired') return 'A manager decision is required — review the outcome and take action.';
+  if (ds === 'ManagerActionRequired') {
+    const outcomeCat = record.structured_evidence?.category || (record as any).manager_outcome_category;
+    const hasTimelineOutcome = record.timeline?.some(e =>
+      e.event_type === 'MANAGER_OUTCOME_DECISION' &&
+      (e.body_preview?.includes('Rejection') || e.body_preview?.includes('Position Closed') || e.body_preview?.includes('Client Rejected'))
+    );
+    const isClosedOutcome = outcomeCat === 'Rejection' || outcomeCat === 'Position Closed' || outcomeCat === 'Client Rejected' || hasTimelineOutcome;
+    if (isClosedOutcome) {
+      return 'Manager decision recorded — close this record to complete the workflow.';
+    }
+    return 'A manager decision is required — review the outcome and take action.';
+  }
   if (ds === 'NeedsReview' || ds === 'NewSubmission') return 'Review this submission and set an outcome category.';
   if (ds === 'InterviewAwaitingConfirmation') return 'Confirm the interview status — completed, rescheduled, or cancelled.';
   if (ds === 'FeedbackDue') return 'Feedback is overdue. Record or request feedback from the hiring team.';

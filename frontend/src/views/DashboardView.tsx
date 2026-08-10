@@ -1,6 +1,9 @@
+import { useState, useEffect } from 'react';
 import type { DashboardSummary, ViewName, RecordHeader } from '../types';
 import { getGreeting, formatRelativeDate } from '../utils/displayStatus';
 import { formatExactET } from '../utils/deadlineUtils';
+import { getSkippedRecordIds, skipRecord, clearSkippedRecords } from '../utils/skipManager';
+import { playSound } from '../utils/audio';
 
 interface DashboardViewProps {
   dashboard: DashboardSummary;
@@ -50,12 +53,19 @@ function focusLanguage(status: string) {
 }
 
 export function DashboardView({ dashboard, onRecordClick, onNavigate }: DashboardViewProps) {
+  const [skippedSet, setSkippedSet] = useState<Set<string>>(() => getSkippedRecordIds());
+  const [skipNotice, setSkipNotice] = useState<string | null>(null);
+
+  useEffect(() => {
+    setSkippedSet(getSkippedRecordIds());
+  }, [dashboard]);
+
   const incompleteCount = dashboard.incomplete ?? dashboard.records.filter(
     record => record.thread_message_count === 0
   ).length;
 
   const attentionRecords = [...dashboard.records]
-    .filter(record => record.domain_status in priorityOrder)
+    .filter(record => (record.domain_status in priorityOrder) && !skippedSet.has(record.id))
     .sort((left, right) => {
       const priorityDifference = (priorityOrder[left.domain_status] ?? 99) - (priorityOrder[right.domain_status] ?? 99);
       if (priorityDifference !== 0) return priorityDifference;
@@ -64,17 +74,53 @@ export function DashboardView({ dashboard, onRecordClick, onNavigate }: Dashboar
       );
     });
 
-  const focusRecord: RecordHeader | undefined = attentionRecords[0] || dashboard.records[0];
+  const focusRecord: RecordHeader | undefined = attentionRecords[0] || dashboard.records.find(r => !skippedSet.has(r.id));
   const focus = focusLanguage(focusRecord?.domain_status || 'NeedsReview');
   const invitePending = dashboard.interview_awaiting_confirmation + (dashboard.interview_request_scheduled || 0);
   const focusReceived = focusRecord?.received_at;
   const focusUpdated = focusRecord?.latest_logical_timestamp || focusReceived;
 
+  const handleSkip = (recordId: string) => {
+    playSound('select');
+    skipRecord(recordId);
+    setSkippedSet(getSkippedRecordIds());
+    setSkipNotice('Skipped until tomorrow morning');
+    setTimeout(() => {
+      setSkipNotice(null);
+    }, 4000);
+  };
+
+  const handleResetSkipped = () => {
+    playSound('select');
+    clearSkippedRecords();
+    setSkippedSet(new Set());
+    setSkipNotice(null);
+  };
+
+  const activeTodayRecords = dashboard.records.filter(r => !skippedSet.has(r.id));
+  const skippedRecords = dashboard.records.filter(r => skippedSet.has(r.id));
+
+  const skippedFollowUps = skippedRecords.filter(r => r.domain_status === 'PendingFollowUp').length;
+  const skippedInvites = skippedRecords.filter(r => r.domain_status === 'InterviewAwaitingConfirmation' || r.domain_status === 'InterviewRequestScheduled').length;
+  const skippedReviews = skippedRecords.filter(r => r.domain_status === 'NeedsReview' || r.domain_status === 'ManagerActionRequired' || r.domain_status === 'FeedbackDue').length;
+
+  const followUpCount = dashboard.records.length > 0
+    ? activeTodayRecords.filter(r => r.domain_status === 'PendingFollowUp').length
+    : Math.max(0, dashboard.pending_follow_up - skippedFollowUps);
+
+  const inviteCount = dashboard.records.length > 0
+    ? activeTodayRecords.filter(r => r.domain_status === 'InterviewAwaitingConfirmation' || r.domain_status === 'InterviewRequestScheduled').length
+    : Math.max(0, invitePending - skippedInvites);
+
+  const reviewCount = dashboard.records.length > 0
+    ? activeTodayRecords.filter(r => r.domain_status === 'NeedsReview' || r.domain_status === 'ManagerActionRequired' || r.domain_status === 'FeedbackDue').length
+    : Math.max(0, dashboard.needs_review - skippedReviews);
+
   const laterToday = [
     {
       key: 'follow-up',
       label: 'Follow-up due',
-      detail: `${dashboard.pending_follow_up} conversations`,
+      detail: `${followUpCount} ${followUpCount === 1 ? 'conversation' : 'conversations'}`,
       time: 'Now',
       tone: 'red',
       icon: '◷',
@@ -83,7 +129,7 @@ export function DashboardView({ dashboard, onRecordClick, onNavigate }: Dashboar
     {
       key: 'invite',
       label: 'Invite pending',
-      detail: `${invitePending} candidates`,
+      detail: `${inviteCount} ${inviteCount === 1 ? 'candidate' : 'candidates'}`,
       time: 'Today',
       tone: 'blue',
       icon: '✉',
@@ -92,7 +138,7 @@ export function DashboardView({ dashboard, onRecordClick, onNavigate }: Dashboar
     {
       key: 'review',
       label: 'Needs review',
-      detail: `${dashboard.needs_review} conversations`,
+      detail: `${reviewCount} ${reviewCount === 1 ? 'conversation' : 'conversations'}`,
       time: 'Today',
       tone: 'violet',
       icon: '▤',
@@ -126,22 +172,50 @@ export function DashboardView({ dashboard, onRecordClick, onNavigate }: Dashboar
               <span>{formatRelativeDate(focusUpdated)}</span>
             </div>
 
-            <button className="figma-why-card" onClick={() => onRecordClick(focusRecord.id)}>
+            <button className="figma-why-card" onClick={() => { playSound('click'); onRecordClick(focusRecord.id); }}>
               <span className="figma-why-icon">?</span>
               <span><strong>Why this status?</strong><small>{focus.reason}</small></span>
             </button>
 
-            <button className="figma-review-action" onClick={() => onRecordClick(focusRecord.id)}>
-              <span className="figma-eye" aria-hidden="true">◉</span>
-              <span>Review conversation</span>
-              <span className="figma-arrow" aria-hidden="true">→</span>
-            </button>
+            <div className="figma-focus-actions">
+              <button className="figma-review-action" onClick={() => { playSound('click'); onRecordClick(focusRecord.id); }}>
+                <span className="figma-eye" aria-hidden="true">◉</span>
+                <span>Review conversation</span>
+                <span className="figma-arrow" aria-hidden="true">→</span>
+              </button>
+              <button
+                type="button"
+                className="figma-skip-action"
+                onClick={() => handleSkip(focusRecord.id)}
+                title="Skip until tomorrow morning"
+              >
+                <span>Skip for later</span>
+              </button>
+            </div>
+            {skipNotice && (
+              <div className="figma-skip-notice" role="status">
+                <span>✓ {skipNotice}</span>
+              </div>
+            )}
           </section>
         ) : (
           <section className="figma-focus-card figma-focus-empty">
-            <span className="figma-focus-eyebrow">ALL CLEAR</span>
-            <h2>No conversation needs your attention.</h2>
-            <p className="figma-focus-evidence">Your active queue is clear.</p>
+            <span className="figma-focus-eyebrow">{skippedSet.size > 0 ? 'ALL SKIPPED' : 'ALL CLEAR'}</span>
+            <h2>{skippedSet.size > 0 ? 'All pending tasks skipped until tomorrow.' : 'No conversation needs your attention.'}</h2>
+            <p className="figma-focus-evidence">
+              {skippedSet.size > 0
+                ? `${skippedSet.size} conversation${skippedSet.size === 1 ? '' : 's'} skipped until tomorrow 9:00 AM.`
+                : 'Your active queue is clear.'}
+            </p>
+            {skippedSet.size > 0 && (
+              <button
+                type="button"
+                className="btn-secondary figma-reset-skipped-btn"
+                onClick={handleResetSkipped}
+              >
+                Reset skipped items
+              </button>
+            )}
           </section>
         )}
 
@@ -168,7 +242,7 @@ export function DashboardView({ dashboard, onRecordClick, onNavigate }: Dashboar
             <h2>Later today</h2>
             <div className="figma-later-list">
               {laterToday.map(item => (
-                <button key={item.key} className={`figma-later-item ${item.tone}`} onClick={() => onNavigate(item.view)}>
+                <button key={item.key} className={`figma-later-item ${item.tone}`} onClick={() => { playSound('click'); onNavigate(item.view); }}>
                   <span className="figma-later-icon">{item.icon}</span>
                   <span><strong>{item.label}</strong><small>{item.detail}</small></span>
                   <time>{item.time}</time>

@@ -1,10 +1,10 @@
 from typing import Dict, Any, Optional, List
 from datetime import datetime
 import re
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from backend.app.domain.models import MessageDirection, MessageFact, ConversationFacts, DomainStatus
 from backend.app.domain.message_facts import analyze_conversation, evaluate_no_response_timers
-from backend.app.domain.interview_parser import evaluate_interview_status
+from backend.app.domain.interview_parser import evaluate_interview_status, evaluate_thread_interview_details
 from backend.app.domain.outcome_parser import evaluate_outcome_status
 from backend.app.domain.evaluation_parser import evaluate_in_evaluation_status
 from backend.app.domain.acknowledgement_parser import evaluate_acknowledgement_status
@@ -29,6 +29,13 @@ class RecordClassificationResult(BaseModel):
     proposed_status: str
     reason_code: str
     timer_anchor_type: Optional[str] = None
+    interview_datetime: Optional[str] = None
+    interview_date: Optional[str] = None
+    interview_time: Optional[str] = None
+    timezone: Optional[str] = None
+    timezone_source: Optional[str] = None
+    confidence_label: Optional[str] = None
+    supporting_message_ids: List[str] = Field(default_factory=list)
 
 def classify_record(
     source_immutable_id: str,
@@ -41,7 +48,7 @@ def classify_record(
     """
     Consolidated deterministic classification pipeline for a single submission record.
     Follows fixed precedence hierarchy:
-    1. Interview (including confirmed linked interview chains)
+    1. Interview (including confirmed linked interview chains & multi-turn evaluation)
     2. Position Closed
     3. Rejection
     4. Duplicate / Already Submitted
@@ -102,62 +109,85 @@ def classify_record(
             timer_anchor_type = "ORIGINAL_SUBMISSION"
         elif facts.timer_anchor_message.direction == MessageDirection.SENT_MESSAGE:
             timer_anchor_type = "MANAGER_FOLLOWUP"
-            
-    # Check 1: Interview
-    if facts.no_response_status == "Requires Classification":
-        evaluate_interview_status(facts, current_time)
-        if facts.interview_status == "Interview Scheduled":
-            return RecordClassificationResult(
-                category="Interview Scheduled",
-                proposed_status="Interview Scheduled",
-                reason_code="DETERMINISTIC_INTERVIEW_SCHEDULED",
-                timer_anchor_type=timer_anchor_type
-            )
-        elif facts.interview_status == "Interview Awaiting Confirmation":
-            return RecordClassificationResult(
-                category="Interview Scheduled",
-                proposed_status="Interview Awaiting Confirmation",
-                reason_code="DETERMINISTIC_INTERVIEW_AWAITING_CONFIRMATION",
-                timer_anchor_type=timer_anchor_type
-            )
-        elif facts.interview_status == "Interview Request":
-            return RecordClassificationResult(
-                category="Interview Request",
-                proposed_status="Needs Review",
-                reason_code="INTERVIEW_REQUEST_REQUIRES_MANAGER_SCHEDULING",
-                timer_anchor_type=timer_anchor_type
-            )
 
     # Check 1b: Interview Activity from Confirmed Linked Conversations
     if linked_conversations:
         for lc in linked_conversations:
             lc_role = getattr(lc, "role", None) if not isinstance(lc, dict) else lc.get("role")
-            if lc_role == "interview_coordination":
+            lc_subject = getattr(lc, "subject", "") if not isinstance(lc, dict) else (lc.get("subject") or lc.get("interview_subject") or "")
+            if lc_role == "interview_coordination" or "interview" in str(lc_subject).lower():
                 lc_msgs = getattr(lc, "thread_messages", None) if not isinstance(lc, dict) else lc.get("thread_messages")
                 if lc_msgs:
-                    lc_facts = analyze_conversation("", lc_msgs)
-                    evaluate_interview_status(lc_facts, current_time)
-                    if lc_facts.interview_status == "Interview Scheduled":
+                    lc_det = evaluate_thread_interview_details(lc_msgs, current_time)
+                    if lc_det.interview_status == "Interview Scheduled":
                         return RecordClassificationResult(
                             category="Interview Scheduled",
                             proposed_status="Interview Scheduled",
                             reason_code="LINKED_CONVERSATION_INTERVIEW_SCHEDULED",
                             timer_anchor_type=timer_anchor_type
                         )
-                    elif lc_facts.interview_status == "Interview Awaiting Confirmation":
+                    elif lc_det.interview_status == "Interview Awaiting Confirmation":
                         return RecordClassificationResult(
                             category="Interview Scheduled",
                             proposed_status="Interview Awaiting Confirmation",
                             reason_code="LINKED_CONVERSATION_INTERVIEW_AWAITING_CONFIRMATION",
                             timer_anchor_type=timer_anchor_type
                         )
-                    elif lc_facts.interview_status == "Interview Request":
-                        return RecordClassificationResult(
-                            category="Interview Request",
-                            proposed_status="Needs Review",
-                            reason_code="LINKED_CONVERSATION_INTERVIEW_REQUEST_REQUIRES_MANAGER_SCHEDULING",
-                            timer_anchor_type=timer_anchor_type
-                        )
+                if "interview scheduled" in str(lc_subject).lower():
+                    return RecordClassificationResult(
+                        category="Interview Scheduled",
+                        proposed_status="Interview Awaiting Confirmation",
+                        reason_code="LINKED_CONVERSATION_INTERVIEW_AWAITING_CONFIRMATION",
+                        timer_anchor_type=timer_anchor_type
+                    )
+
+    # Check 1: Multi-turn Interview Evaluation
+    all_msgs = list(thread_messages or [])
+    det = evaluate_thread_interview_details(all_msgs, current_time)
+    if det.confidence_label == "Schedule conflict":
+        return RecordClassificationResult(
+            category="Needs Review",
+            proposed_status="Needs Review",
+            reason_code="SCHEDULE_CONFLICT",
+            timer_anchor_type=timer_anchor_type,
+            interview_datetime=det.interview_datetime,
+            interview_date=det.interview_date,
+            interview_time=det.interview_time,
+            timezone=det.timezone,
+            timezone_source=det.timezone_source,
+            confidence_label=det.confidence_label,
+            supporting_message_ids=det.supporting_message_ids,
+        )
+
+    if det.interview_status == "Interview Scheduled":
+        return RecordClassificationResult(
+            category="Interview Scheduled",
+            proposed_status="Interview Scheduled",
+            reason_code="DETERMINISTIC_INTERVIEW_SCHEDULED",
+            timer_anchor_type=timer_anchor_type,
+            interview_datetime=det.interview_datetime,
+            interview_date=det.interview_date,
+            interview_time=det.interview_time,
+            timezone=det.timezone,
+            timezone_source=det.timezone_source,
+            confidence_label=det.confidence_label,
+            supporting_message_ids=det.supporting_message_ids,
+        )
+
+    if det.interview_status == "Interview Awaiting Confirmation":
+        return RecordClassificationResult(
+            category="Interview Scheduled",
+            proposed_status="Interview Awaiting Confirmation",
+            reason_code="DETERMINISTIC_INTERVIEW_AWAITING_CONFIRMATION",
+            timer_anchor_type=timer_anchor_type,
+            interview_datetime=det.interview_datetime,
+            interview_date=det.interview_date,
+            interview_time=det.interview_time,
+            timezone=det.timezone,
+            timezone_source=det.timezone_source,
+            confidence_label=det.confidence_label,
+            supporting_message_ids=det.supporting_message_ids,
+        )
 
             
     # Check 2: Outcome Status (Position Closed, Rejection, Duplicate)

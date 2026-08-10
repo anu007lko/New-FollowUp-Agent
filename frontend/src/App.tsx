@@ -24,7 +24,7 @@ function App() {
   const {
     dashboard, selectedRecord, loading, recordLoading, error,
     mailboxRefreshing, mailboxRefreshMessage, mailboxRefreshError,
-    fetchDashboard, runMailboxReview, openRecord, closeRecord,
+    fetchDashboard, runMailboxReview, openRecord, closeRecord, refreshAllData,
   } = useRecords();
 
   // Persist sidebar preference
@@ -129,7 +129,7 @@ function App() {
           record={selectedRecord}
           loading={recordLoading}
           onClose={handleClosePanel}
-          onRefreshRecord={() => openRecord(selectedRecord.id)}
+          onRefreshRecord={(recordId) => refreshAllData(recordId)}
         />
       )}
     </AppShell>
