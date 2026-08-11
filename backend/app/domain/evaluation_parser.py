@@ -27,23 +27,37 @@ def evaluate_in_evaluation_status(facts: ConversationFacts, current_time: dateti
     in_eval_phrases = [
         "under review", "under evaluation", "awaiting feedback", 
         "awaiting client feedback", "awaiting manager feedback",
-        "will update you", "share next steps", "profile under review"
+        "will update you", "share next steps", "profile under review",
+        "will get back to you", "will get back", "fitment checked",
+        "share feedback on fitment", "not evaluated", "please evaluate",
+        "pl update on this", "bulk number of profiles"
     ]
     
     feedback_phrases = [
         "interview feedback", "candidate feedback", 
         "additional information", "more info needed", "need more info", "request for additional"
     ]
+
+    coordination_phrases = [
+        "tried reaching", "not picking up the call", "not picking the call",
+        "please check on his availability", "please check on her availability",
+        "check on his availability", "check on her availability",
+        "please let us know her availability", "please let us know his availability",
+        "ask her to call", "ask him to call", "candidate availability"
+    ]
     
     has_eval = any(p in lower_text for p in in_eval_phrases)
     has_feedback = any(p in lower_text for p in feedback_phrases)
+    has_coordination = any(p in lower_text for p in coordination_phrases)
     
-    if has_eval and has_feedback:
+    if sum([has_eval, has_feedback, has_coordination]) > 1:
         # Conflicting outcomes (ambiguous meaning)
         facts.outcome_status = "Needs Review"
         return
         
-    if has_eval:
+    if has_coordination:
+        facts.outcome_status = "Candidate Coordination"
+    elif has_eval:
         facts.outcome_status = "In Evaluation"
         # Calculate timer
         msg_local = facts.latest_inbound_message.timestamp.astimezone(TIMEZONE_NEW_YORK)

@@ -14,6 +14,7 @@ class FakeGraph:
             "id": "header-1", "conversationId": "interview-conv",
             "subject": f"RE: {SUBJECT}", "bodyPreview": "Interview invite sent for Monday",
             "receivedDateTime": "2026-08-08T14:00:00Z",
+            "from": {"emailAddress": {"address": "recruiter@tcs.com"}},
         }], "ok", {})
 
     def fetch_exact_conversation_messages(self, conversation_id):
@@ -21,6 +22,7 @@ class FakeGraph:
             "id": "immutable-1", "conversationId": conversation_id,
             "subject": SUBJECT, "bodyPreview": "Interview invite sent for Monday",
             "receivedDateTime": "2026-08-08T14:00:00Z",
+            "from": {"emailAddress": {"address": "recruiter@tcs.com"}},
         }], "ok")
 
 

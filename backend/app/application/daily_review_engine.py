@@ -26,6 +26,7 @@ from backend.app.infrastructure.graph_client import MicrosoftGraphClient
 from backend.app.domain.consolidated_classifier import (
     PROPOSED_TO_DOMAIN_STATUS,
     classify_record,
+    refresh_classification_snapshot,
 )
 
 logger = logging.getLogger("daily_review_engine")
@@ -340,20 +341,6 @@ class DailyReviewEngine:
                         if message_id:
                             authoritative_followup_ids.append(message_id)
 
-                result = classify_record(
-                    rec.graph_immutable_id,
-                    thread_messages,
-                    datetime.now(TIMEZONE_NEW_YORK),
-                    authoritative_followup_ids=authoritative_followup_ids,
-                    timeline=timeline,
-                    linked_conversations=payload.get("linked_conversations", []),
-                )
-                target_status = PROPOSED_TO_DOMAIN_STATUS.get(result.proposed_status)
-                if target_status is None and result.proposed_status in {s.value for s in DomainStatus}:
-                    target_status = DomainStatus(result.proposed_status)
-                if target_status is None:
-                    target_status = DomainStatus.NEEDS_REVIEW
-
                 prior_derived = (
                     payload.get("classification_category"),
                     payload.get("classification_status"),
@@ -361,6 +348,20 @@ class DailyReviewEngine:
                     payload.get("timer_anchor_type"),
                     payload.get("confidence_label"),
                 )
+
+                result = refresh_classification_snapshot(
+                    payload,
+                    graph_immutable_id=rec.graph_immutable_id,
+                    evaluation_time=datetime.now(TIMEZONE_NEW_YORK),
+                    authoritative_followup_ids=authoritative_followup_ids,
+                    classify_fn=classify_record
+                )
+                target_status = PROPOSED_TO_DOMAIN_STATUS.get(result.proposed_status)
+                if target_status is None and result.proposed_status in {s.value for s in DomainStatus}:
+                    target_status = DomainStatus(result.proposed_status)
+                if target_status is None:
+                    target_status = DomainStatus.NEEDS_REVIEW
+
                 conf_label_run = result.confidence_label if isinstance(result.confidence_label, str) else payload.get("confidence_label")
                 new_derived = (
                     result.category,
@@ -531,7 +532,7 @@ class DailyReviewEngine:
         except Exception:
             pass
 
-    def refresh_single_record(self, record_id: str) -> SingleRecordRefreshResult:
+    def refresh_single_record(self, record_id: str, expected_version: Optional[int] = None) -> SingleRecordRefreshResult:
         """
         Safely fetch and merge Graph thread updates for exactly one existing record,
         without triggering full review workflows, imports, or iterating all records.
@@ -547,6 +548,12 @@ class DailyReviewEngine:
             return SingleRecordRefreshResult(
                 status=SingleRecordRefreshStatus.NOT_FOUND,
                 error_message="Record not found"
+            )
+
+        if expected_version is not None and record.record_version != expected_version:
+            return SingleRecordRefreshResult(
+                status=SingleRecordRefreshStatus.CONFLICT,
+                error_message="Record version token is stale or mismatched."
             )
 
         snapshot = self.persistence.get_record_payload_snapshot(record_id)
@@ -638,20 +645,6 @@ class DailyReviewEngine:
                 if message_id:
                     authoritative_followup_ids.append(message_id)
 
-        result = classify_record(
-            record.graph_immutable_id,
-            thread_messages,
-            datetime.now(TIMEZONE_NEW_YORK),
-            authoritative_followup_ids=authoritative_followup_ids,
-            timeline=timeline,
-            linked_conversations=payload.get("linked_conversations", []),
-        )
-        target_status = PROPOSED_TO_DOMAIN_STATUS.get(result.proposed_status)
-        if target_status is None and result.proposed_status in {s.value for s in DomainStatus}:
-            target_status = DomainStatus(result.proposed_status)
-        if target_status is None:
-            target_status = DomainStatus.NEEDS_REVIEW
-
         prior_derived = (
             payload.get("classification_category"),
             payload.get("classification_status"),
@@ -659,6 +652,20 @@ class DailyReviewEngine:
             payload.get("timer_anchor_type"),
             payload.get("confidence_label"),
         )
+
+        result = refresh_classification_snapshot(
+            payload,
+            graph_immutable_id=record.graph_immutable_id,
+            evaluation_time=datetime.now(TIMEZONE_NEW_YORK),
+            authoritative_followup_ids=authoritative_followup_ids,
+            classify_fn=classify_record
+        )
+        target_status = PROPOSED_TO_DOMAIN_STATUS.get(result.proposed_status)
+        if target_status is None and result.proposed_status in {s.value for s in DomainStatus}:
+            target_status = DomainStatus(result.proposed_status)
+        if target_status is None:
+            target_status = DomainStatus.NEEDS_REVIEW
+
         conf_label = result.confidence_label if isinstance(result.confidence_label, str) else payload.get("confidence_label")
         new_derived = (
             result.category,

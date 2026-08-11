@@ -154,3 +154,17 @@ def test_rule7_cancellation_supersedes_older_scheduled_time():
     res = evaluate_thread_interview_details([msg1, msg2], cur)
     assert res.interview_status == "Needs Review"
     assert res.confidence_label is None
+
+
+def test_delivery_failure_email_ignored():
+    msg = {
+        "graph_immutable_id": "msg-ndr-001",
+        "sender": "MicrosoftExchange329e71ec88ae4615bbc36ab6ce41109e",
+        "body_preview": "Aug 4, 6:48 PM Your message to candidate@aexp.com couldn't be delivered. candidate wasn't found at aexp.com.",
+        "timestamp": "2026-08-04T18:48:00Z",
+    }
+    cur = datetime(2026, 8, 10, 12, 0, tzinfo=timezone.utc)
+    res = evaluate_thread_interview_details([msg], cur)
+    assert res.interview_status == "Needs Review"
+    assert res.interview_datetime is None
+

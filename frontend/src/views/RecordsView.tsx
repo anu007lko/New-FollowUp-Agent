@@ -6,11 +6,13 @@ import { IconSearch, IconWarning } from '../components/icons';
 import { getDisplayStatus, formatTimestamp } from '../utils/displayStatus';
 import { formatExactET } from '../utils/deadlineUtils';
 import { CustomDropdown } from '../components/CustomDropdown';
+import { OverflowMenu } from '../components/OverflowMenu';
 import { playSound } from '../utils/audio';
 
 interface RecordsViewProps {
   records: RecordHeader[];
   onRecordClick: (id: string) => void;
+  onActionModal?: (recordId: string, actionType: string, recordVersion?: number) => void;
   selectedRecordId?: string | null;
   initialStatusFilter?: string;
   globalSearch?: string;
@@ -21,7 +23,7 @@ type SortDir = 'asc' | 'desc';
 
 const PAGE_SIZE = 20;
 
-export function RecordsView({ records, onRecordClick, selectedRecordId, initialStatusFilter, globalSearch }: RecordsViewProps) {
+export function RecordsView({ records, onRecordClick, onActionModal, selectedRecordId, initialStatusFilter, globalSearch }: RecordsViewProps) {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState(initialStatusFilter || 'all');
   const [completenessFilter, setCompletenessFilter] = useState<'all' | 'complete' | 'incomplete'>('all');
@@ -252,6 +254,7 @@ export function RecordsView({ records, onRecordClick, selectedRecordId, initialS
                       Last Update{sortIcon('latest_logical_timestamp')}
                     </button>
                   </th>
+                  <th className="col-actions" style={{ width: '60px', textAlign: 'center' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -282,6 +285,27 @@ export function RecordsView({ records, onRecordClick, selectedRecordId, initialS
                     </td>
                     <td className="col-location cell-secondary hide-tablet" title={r.location || undefined} aria-label={r.location || '—'}>{r.location || '—'}</td>
                     <td className="col-updated cell-dim" title={formatExactET(r.latest_logical_timestamp || r.received_at)} aria-label={`Last update: ${formatExactET(r.latest_logical_timestamp || r.received_at) || formatTimestamp(r.latest_logical_timestamp || r.received_at)}`}>{formatTimestamp(r.latest_logical_timestamp || r.received_at)}</td>
+                    <td className="col-actions" onClick={e => e.stopPropagation()}>
+                      {(() => {
+                        const allowed = (r as any).workflow?.allowed_actions || [];
+                        const rowItems = allowed.length > 0 ? allowed.map((a: any) => ({
+                          label: a.label,
+                          danger: a.style === 'danger',
+                          onClick: () => {
+                            playSound('click');
+                            if (a.execution_kind === 'navigation' && a.action_id === 'VIEW_CONVERSATION') {
+                              onRecordClick(r.id);
+                            } else if (onActionModal) {
+                              onActionModal(r.id, a.action_id, r.record_version);
+                            } else {
+                              onRecordClick(r.id);
+                            }
+                          }
+                        })) : [{ label: 'No actions available', disabled: true, onClick: () => {} }];
+
+                        return <OverflowMenu items={rowItems} />;
+                      })()}
+                    </td>
                   </tr>
                 ))}
               </tbody>

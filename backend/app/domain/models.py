@@ -6,10 +6,17 @@ Authoritative domain state contracts.
 from enum import Enum
 from typing import Optional, List, Dict, Any
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 
 class DomainStatus(str, Enum):
+    # Canonical workflow values are accepted here as persisted records are
+    # read through the legacy SubmissionRecordHeader contract.  The workflow
+    # view composer normalizes both these values and the older domain values.
+    TRACKING = "Tracking"
+    ACTION_REQUIRED = "ActionRequired"
+    INTERVIEW_SCHEDULED = "InterviewScheduled"
+    FEEDBACK_PENDING = "FeedbackPending"
     NEW_SUBMISSION = "NewSubmission"
     AWAITING_RESPONSE = "AwaitingResponse"
     IN_EVALUATION = "InEvaluation"
@@ -57,9 +64,13 @@ class InterviewOutcome(str, Enum):
 
 
 class CloseReason(str, Enum):
+    """Canonical close reasons — exactly 8 values. No aliases persisted."""
+    DUPLICATE_SUBMISSION_ENTRY = "Duplicate submission entry"
+    CLIENT_REJECTED = "Client rejected"
     POSITION_CLOSED = "Position closed"
     CANDIDATE_WITHDRAWN = "Candidate withdrawn"
-    CLIENT_REJECTED = "Client rejected"
+    PLACED_JOINED = "Placed / joined"
+    NO_LONGER_AVAILABLE = "No longer available"
     NO_FOLLOW_UP_NEEDED = "No follow-up needed"
     OTHER = "Other"
 
@@ -545,6 +556,12 @@ class DraftOperationActionRequest(BaseModel):
     record_id: str
     idempotency_key: str
     approval_hash: str
+    record_version: int
+
+
+class RecordRefreshRequest(BaseModel):
+    """Optimistic concurrency token for a single-record mailbox refresh."""
+    record_version: int
 
 
 # --- M6 Retention & Backup Models ---
@@ -649,3 +666,280 @@ class ConversationFacts(BaseModel):
     interview_datetime: Optional[datetime] = None
     outcome_status: Optional[str] = None
     in_evaluation_timer_status: Optional[str] = None
+
+
+# ==============================================================================
+# Unified Workflow System — Typed Enums, DTOs, and Request/Response Models
+# ==============================================================================
+
+
+# --- §1 Canonical Workflow Status ---
+
+class WorkflowStatus(str, Enum):
+    """Exactly 7 canonical workflow statuses."""
+    NEEDS_REVIEW = "NeedsReview"
+    TRACKING = "Tracking"
+    ACTION_REQUIRED = "ActionRequired"
+    INTERVIEW_SCHEDULED = "InterviewScheduled"
+    FEEDBACK_PENDING = "FeedbackPending"
+    FEEDBACK_DUE = "FeedbackDue"
+    CLOSED = "Closed"
+
+
+# --- §3.1 Display & Style Enums ---
+
+class ActionStyle(str, Enum):
+    PRIMARY = "primary"
+    SECONDARY = "secondary"
+    DANGER = "danger"
+    GHOST = "ghost"
+
+
+class DisplayTone(str, Enum):
+    REVIEW = "review"
+    TRACKING = "tracking"
+    ACTION = "action"
+    INTERVIEW = "interview"
+    AWAITING = "awaiting"
+    FEEDBACK = "feedback"
+    CLOSED = "closed"
+
+
+class QueueID(str, Enum):
+    NEEDS_REVIEW = "needs_review"
+    ACTION_REQUIRED = "action_required"
+    INTERVIEWS = "interviews"
+    FEEDBACK_PENDING = "feedback_pending"
+    FEEDBACK_DUE = "feedback_due"
+    CLOSED = "closed"
+
+
+# --- §3.2 User-Facing Action & Outcome Enums ---
+
+class ActionID(str, Enum):
+    """Actions that appear in allowed_actions for UI rendering."""
+    # Workflow mutations (POST /records/{id}/action)
+    REVIEW_OUTCOME = "REVIEW_OUTCOME"
+    CLOSE_RECORD = "CLOSE_RECORD"
+    MARK_DUPLICATE_SUBMISSION = "MARK_DUPLICATE_SUBMISSION"
+    REOPEN_RECORD = "REOPEN_RECORD"
+    ADD_NOTE = "ADD_NOTE"
+    # Draft-subsystem commands (open draft UI; NOT workflow mutation endpoint)
+    CREATE_DRAFT = "CREATE_DRAFT"
+    REVIEW_FOLLOW_UP_DRAFT = "REVIEW_FOLLOW_UP_DRAFT"
+    # Navigation (no endpoint call; frontend-only routing)
+    VIEW_CONVERSATION = "VIEW_CONVERSATION"
+    VIEW_AUDIT_TRAIL = "VIEW_AUDIT_TRAIL"
+
+
+class ActionExecutionKind(str, Enum):
+    """How the frontend should execute a given action."""
+    WORKFLOW_MUTATION = "workflow_mutation"
+    DRAFT_COMMAND = "draft_command"
+    NAVIGATION = "navigation"
+
+
+class OutcomeOptionID(str, Enum):
+    POSITION_CLOSED = "POSITION_CLOSED"
+    CLIENT_REJECTED = "CLIENT_REJECTED"
+    CANDIDATE_WITHDRAWN = "CANDIDATE_WITHDRAWN"
+    DUPLICATE_SUBMISSION = "DUPLICATE_SUBMISSION"
+    PLACED_JOINED = "PLACED_JOINED"
+    NO_LONGER_AVAILABLE = "NO_LONGER_AVAILABLE"
+    NO_FOLLOW_UP_NEEDED = "NO_FOLLOW_UP_NEEDED"
+    OTHER_CLOSED = "OTHER_CLOSED"
+    ON_HOLD = "ON_HOLD"
+    KEEP_IN_REVIEW = "KEEP_IN_REVIEW"
+
+
+# --- §3.3 Audit Event Enums (Internal) ---
+
+class AuditEventType(str, Enum):
+    """Origin of an audit event. Separate from ActionID."""
+    USER_ACTION = "USER_ACTION"
+    SYSTEM_TIMER_TRANSITION = "SYSTEM_TIMER_TRANSITION"
+    SYSTEM_CLASSIFICATION_UPDATE = "SYSTEM_CLASSIFICATION_UPDATE"
+    SYSTEM_MIGRATION = "SYSTEM_MIGRATION"
+
+
+# --- §2 Alias Normalization (Fail-Closed) ---
+
+_CLOSE_REASON_ALIAS_MAP: Dict[str, CloseReason] = {
+    "duplicate submission": CloseReason.DUPLICATE_SUBMISSION_ENTRY,
+    "duplicate submission entry": CloseReason.DUPLICATE_SUBMISSION_ENTRY,
+    "duplicate": CloseReason.DUPLICATE_SUBMISSION_ENTRY,
+    "candidate already submitted by another vendor": CloseReason.DUPLICATE_SUBMISSION_ENTRY,
+    "duplicate / already submitted": CloseReason.DUPLICATE_SUBMISSION_ENTRY,
+    "position closed": CloseReason.POSITION_CLOSED,
+    "candidate withdrawn": CloseReason.CANDIDATE_WITHDRAWN,
+    "client rejected": CloseReason.CLIENT_REJECTED,
+    "placed / joined": CloseReason.PLACED_JOINED,
+    "placed/joined": CloseReason.PLACED_JOINED,
+    "no longer available": CloseReason.NO_LONGER_AVAILABLE,
+    "no follow-up needed": CloseReason.NO_FOLLOW_UP_NEEDED,
+    "no follow up needed": CloseReason.NO_FOLLOW_UP_NEEDED,
+    "other": CloseReason.OTHER,
+}
+
+
+def normalize_close_reason(raw: str) -> CloseReason:
+    """Case-insensitive normalization. Raises ValueError for unknown values."""
+    result = _CLOSE_REASON_ALIAS_MAP.get(raw.strip().lower())
+    if result is None:
+        raise ValueError(f"Unknown close reason: '{raw}'")
+    return result
+
+
+# --- §4 Generic Action Request Schema ---
+
+class ActionExecutionRequest(BaseModel):
+    """Generic payload for all workflow mutation actions."""
+    action_id: ActionID
+    record_version: int
+    reason: Optional[CloseReason] = None
+    outcome_option_id: Optional[OutcomeOptionID] = None
+    note: Optional[str] = None
+
+    _original_submitted_reason: Optional[str] = PrivateAttr(default=None)
+
+    @field_validator("reason", mode="before")
+    @classmethod
+    def normalize_reason_alias(cls, v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, CloseReason):
+            return v
+        # Normalize string aliases to canonical CloseReason
+        return normalize_close_reason(str(v))
+
+
+# --- §6 Outcome Option DTO ---
+
+class OutcomeOptionDTO(BaseModel):
+    option_id: OutcomeOptionID
+    label: str
+    is_terminal: bool
+    resulting_status: WorkflowStatus
+    close_reason: Optional[CloseReason] = None
+    requires_note: bool = False
+    note_hint: Optional[str] = None
+
+
+# --- §14 Response DTOs ---
+
+class ActionDTO(BaseModel):
+    action_id: ActionID
+    label: str
+    style: ActionStyle
+    execution_kind: ActionExecutionKind
+    requires_confirmation: bool = False
+    confirmation_title: Optional[str] = None
+    confirmation_message: Optional[str] = None
+    reason_options: List[CloseReason] = Field(default_factory=list)
+    locked_reason: Optional[CloseReason] = None
+    note_required_when_reason: Optional[CloseReason] = None
+    outcome_options: List[OutcomeOptionDTO] = Field(default_factory=list)
+
+
+class DisplayMetadataDTO(BaseModel):
+    label: str
+    tone: DisplayTone
+    description: str
+
+
+class RecordWorkflowDTO(BaseModel):
+    """Full workflow DTO — detail and mutation endpoints."""
+    status: WorkflowStatus
+    outcome: Optional[str] = None
+    close_reason: Optional[CloseReason] = None
+    evidence_category: Optional[str] = None
+    queue_membership: List[QueueID] = Field(default_factory=list)
+    display: DisplayMetadataDTO
+    allowed_actions: List[ActionDTO] = Field(default_factory=list)
+
+
+class CompactWorkflowDTO(BaseModel):
+    """Lightweight workflow DTO — list and dashboard endpoints."""
+    status: WorkflowStatus
+    evidence_category: Optional[str] = None
+    queue_membership: List[QueueID] = Field(default_factory=list)
+    display: DisplayMetadataDTO
+    allowed_actions: List[ActionDTO] = Field(default_factory=list)
+
+
+class SubmissionRecordDTO(BaseModel):
+    """API-safe record representation."""
+    id: str
+    candidate_name: str
+    job_id: str
+    job_title: Optional[str] = None
+    unit: Optional[str] = None
+    location: Optional[str] = None
+    vendor: Optional[str] = None
+    received_at: Optional[str] = None
+    closed_at: Optional[str] = None
+    close_reason: Optional[CloseReason] = None
+    close_note: Optional[str] = None
+    record_version: int
+    timeline_count: int = 0
+    thread_message_count: int = 0
+
+
+class RecordDetailResponse(BaseModel):
+    """Full response for GET /records/{id} and mutation responses."""
+    id: str
+    candidate_name: Optional[str] = None
+    job_id: Optional[str] = None
+    ep_reference: Optional[str] = None
+    domain_status: Optional[str] = None
+    record_version: int = 1
+    received_at: Optional[str] = None
+    closed_at: Optional[str] = None
+    timeline: List[TimelineEntry] = Field(default_factory=list)
+    record: SubmissionRecordDTO
+    workflow: RecordWorkflowDTO
+
+
+class RecordListItem(BaseModel):
+    """Compact response for GET /records and GET /dashboard."""
+    id: str
+    candidate_name: Optional[str] = None
+    job_id: Optional[str] = None
+    ep_reference: Optional[str] = None
+    domain_status: Optional[str] = None
+    record: SubmissionRecordDTO
+    workflow: CompactWorkflowDTO
+
+
+# --- §12.1 Audit Event ---
+
+class AuditEvent(BaseModel):
+    event_id: str
+    event_type: AuditEventType
+    action_id: Optional[ActionID] = None
+    actor: str
+    timestamp: str
+    prior_status: WorkflowStatus
+    resulting_status: WorkflowStatus
+    normalized_reason: Optional[CloseReason] = None
+    original_submitted_reason: Optional[str] = None
+    note: Optional[str] = None
+    field_changes: Optional[Dict[str, Any]] = None
+
+
+# --- §7 Classifier Output ---
+
+class ClassificationProposal(BaseModel):
+    """Output of the classifier. Evidence only, no status decisions."""
+    evidence_category: Optional[str] = None
+    confidence: float = 0.0
+    reason_code: Optional[str] = None
+    interview_datetime: Optional[str] = None
+    timer_anchor_timestamp: Optional[str] = None
+
+
+class ClassificationDecision(BaseModel):
+    """Policy engine decision on a classifier proposal."""
+    update_evidence: bool = False
+    new_classification_category: Optional[str] = None
+    ignored_reason: Optional[str] = None

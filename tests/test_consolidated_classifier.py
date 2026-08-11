@@ -106,6 +106,95 @@ def test_interview_awaiting_confirmation_category_separation():
     # Ref time after the scheduled interview time
     ref_time = datetime(2026, 8, 2, 10, 0, tzinfo=timezone.utc)
     res = classify_record(source_id, thread, ref_time)
-    assert res.category == "Interview Scheduled"
-    assert res.proposed_status == "Interview Awaiting Confirmation"
+    assert res.category == "Interview Completed"
     assert res.category != "Interview Awaiting Confirmation"
+
+
+def test_delivery_failure_is_ignored_and_submission_keeps_tracking():
+    source_id = "msg_1"
+    thread = [
+        {
+            "id": "msg_1",
+            "sentDateTime": "2026-08-01T10:00:00Z",
+            "from": {"emailAddress": {"address": "tarun@clifyx.com"}},
+            "bodyPreview": "Submitting candidate"
+        },
+        {
+            "id": "ndr_1",
+            "sentDateTime": "2026-08-01T10:01:00Z",
+            "from": {"emailAddress": {"address": "postmaster@tcs.com"}},
+            "subject": "Undeliverable: candidate submission",
+            "bodyPreview": "Delivery has failed. 550 5.1.10 RecipientNotFound."
+        }
+    ]
+    ref_time = datetime(2026, 8, 2, 10, 0, tzinfo=timezone.utc)
+    res = classify_record(source_id, thread, ref_time)
+    assert res.category == "No Response"
+    assert res.proposed_status == "Awaiting Response"
+    assert res.reason_code == "NO_INBOUND_AWAITING_RESPONSE_WITHIN_48H"
+
+
+def test_position_on_hold_classification():
+    source_id = "msg_1"
+    thread = [
+        {
+            "id": "msg_1",
+            "sentDateTime": "2026-08-01T10:00:00Z",
+            "from": {"emailAddress": {"address": "tarun@clifyx.com"}},
+            "bodyPreview": "Submitting candidate"
+        },
+        {
+            "id": "msg_2",
+            "sentDateTime": "2026-08-01T11:00:00Z",
+            "from": {"emailAddress": {"address": "purva.limaye@tcs.com"}},
+            "bodyPreview": "The position is on hold for now. I will update if it reopens."
+        }
+    ]
+    res = classify_record(source_id, thread, datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc))
+    assert res.category == "On Hold"
+    assert res.proposed_status == "In Evaluation"
+    assert res.reason_code == "DETERMINISTIC_POSITION_ON_HOLD"
+
+
+def test_selected_application_requested_classification():
+    source_id = "msg_1"
+    thread = [
+        {
+            "id": "msg_1",
+            "sentDateTime": "2026-08-01T10:00:00Z",
+            "from": {"emailAddress": {"address": "tarun@clifyx.com"}},
+            "bodyPreview": "Submitting candidate"
+        },
+        {
+            "id": "msg_2",
+            "sentDateTime": "2026-08-01T11:00:00Z",
+            "from": {"emailAddress": {"address": "sara.palani@tcs.com"}},
+            "bodyPreview": "Joicy is selected, please share the application."
+        }
+    ]
+    res = classify_record(source_id, thread, datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc))
+    assert res.category == "Selected"
+    assert res.proposed_status == "Manager Action Required"
+    assert res.reason_code == "DETERMINISTIC_SELECTED_APPLICATION_REQUESTED"
+
+
+def test_candidate_coordination_classification():
+    source_id = "msg_1"
+    thread = [
+        {
+            "id": "msg_1",
+            "sentDateTime": "2026-08-01T10:00:00Z",
+            "from": {"emailAddress": {"address": "tarun@clifyx.com"}},
+            "bodyPreview": "Submitting candidate"
+        },
+        {
+            "id": "msg_2",
+            "sentDateTime": "2026-08-01T11:00:00Z",
+            "from": {"emailAddress": {"address": "soumya.mohapatra1@tcs.com"}},
+            "bodyPreview": "We tried reaching Ashutosh and he was not picking up the call. Please check on his availability."
+        }
+    ]
+    res = classify_record(source_id, thread, datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc))
+    assert res.category == "Candidate Coordination"
+    assert res.proposed_status == "Manager Action Required"
+    assert res.reason_code == "DETERMINISTIC_CANDIDATE_COORDINATION_REQUIRED"

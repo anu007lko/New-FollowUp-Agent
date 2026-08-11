@@ -118,6 +118,9 @@ class ImportService:
                     "thread_messages": thread_messages,
                     "thread_message_count": len(thread_messages),
                 }
+                from backend.app.domain.consolidated_classifier import refresh_classification_snapshot
+                refresh_classification_snapshot(payload_data, graph_immutable_id=graph_immutable_id)
+
                 is_new, is_dup = self.persistence.upsert_submission(
                     record_id=record_id,
                     graph_immutable_id=graph_immutable_id,

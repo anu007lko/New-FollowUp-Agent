@@ -17,6 +17,7 @@ import re
 from typing import Any, Dict, List, Optional
 from backend.app.domain.date_utils import TIMEZONE_NEW_YORK
 from backend.app.domain.text_cleaner import clean_email_text
+from backend.app.domain.message_facts import is_automatic_reply
 
 
 def strip_quoted_history(text: Any) -> str:
@@ -361,6 +362,9 @@ def evaluate_thread_interview_details(
         msg_id = m.get("graph_immutable_id") or m.get("entry_id") or m.get("id") or ""
         sender = m.get("sender") or m.get("sender_email") or ""
         raw_text = m.get("body_preview") or m.get("body") or m.get("subject") or m.get("bodyPreview") or ""
+        if is_automatic_reply(sender, raw_text, m):
+            continue
+
         unquoted = strip_quoted_history(raw_text)
         clean_text = clean_email_text(unquoted)
         lower_text = clean_text.lower()
@@ -424,7 +428,12 @@ def evaluate_thread_interview_details(
             )
 
         current_local = current_time.astimezone(TIMEZONE_NEW_YORK)
-        status_code = "Interview Scheduled" if active.dt > current_local else "Interview Awaiting Confirmation"
+        end_time_local = active.dt + timedelta(hours=1)
+        
+        if current_local >= end_time_local:
+            status_code = "Interview Completed"
+        else:
+            status_code = "Interview Scheduled"
 
         return InterviewDetectionResult(
             interview_status=status_code,

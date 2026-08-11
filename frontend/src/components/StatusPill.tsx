@@ -3,11 +3,12 @@ import { getDisplayStatus } from '../utils/displayStatus';
 interface StatusPillProps {
   domainStatus: string;
   threadMessageCount?: number;
+  category?: string;
   size?: 'sm' | 'md';
 }
 
-export function StatusPill({ domainStatus, threadMessageCount, size = 'md' }: StatusPillProps) {
-  const ds = getDisplayStatus(domainStatus, threadMessageCount);
+export function StatusPill({ domainStatus, threadMessageCount, category, size = 'md' }: StatusPillProps) {
+  const ds = getDisplayStatus(domainStatus, threadMessageCount, category);
   return (
     <span
       className={`status-pill ${ds.className} ${size === 'sm' ? 'status-pill-sm' : ''}`}

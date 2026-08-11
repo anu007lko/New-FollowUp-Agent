@@ -236,18 +236,18 @@ def test_set_outcome_preserves_fields_and_evidence(temp_persistence_db, monkeypa
     assert res.status_code == 200
     data = res.json()
     assert data["record_version"] == 2
-    assert data["domain_status"] == DomainStatus.MANAGER_ACTION_REQUIRED.value
+    assert data["domain_status"] == DomainStatus.CLOSED.value
     assert data["candidate_name"] == "Joicy Malarvizhi"
     assert data["job_id"] == "416955"
     assert data["ep_reference"] == "EP2026RA7317431"
-    assert data["closed_at"] is None
-    assert data["close_reason"] is None
+    assert data["closed_at"] is not None
+    assert data["close_reason"] == "Position Closed"
     assert data["structured_evidence"]["category"] == "Position Closed"
-    assert data["structured_evidence"]["workflow_status"] == DomainStatus.MANAGER_ACTION_REQUIRED.value
+    assert data["structured_evidence"]["workflow_status"] == DomainStatus.CLOSED.value
 
 
 def test_set_outcome_rejection_sets_action_required_and_open(temp_persistence_db, monkeypatch):
-    """Set Outcome Rejection moves to ManagerActionRequired, stores category, and keeps record open."""
+    """Set Outcome Rejection moves to Closed, stores category, and sets closed_at."""
     monkeypatch.setenv("READ_ONLY", "True")
     monkeypatch.setenv("APP_MODE", "manager_local")
     monkeypatch.setenv("MANAGER_EMAIL", "tarun@clifyx.com")
@@ -269,12 +269,12 @@ def test_set_outcome_rejection_sets_action_required_and_open(temp_persistence_db
     assert res.status_code == 200
     data = res.json()
     assert data["record_version"] == 2
-    assert data["domain_status"] == DomainStatus.MANAGER_ACTION_REQUIRED.value
+    assert data["domain_status"] == DomainStatus.CLOSED.value
     assert data["candidate_name"] == "Joicy Malarvizhi"
-    assert data["closed_at"] is None
-    assert data["close_reason"] is None
+    assert data["closed_at"] is not None
+    assert data["close_reason"] == "Rejection"
     assert data["structured_evidence"]["category"] == "Rejection"
-    assert data["structured_evidence"]["workflow_status"] == DomainStatus.MANAGER_ACTION_REQUIRED.value
+    assert data["structured_evidence"]["workflow_status"] == DomainStatus.CLOSED.value
 
 
 def test_set_outcome_appends_note_when_legacy_manager_notes_is_list(temp_persistence_db, monkeypatch):
@@ -313,7 +313,7 @@ def test_set_outcome_appends_note_when_legacy_manager_notes_is_list(temp_persist
     assert res.status_code == 200
     data = res.json()
     assert data["record_version"] == 2
-    assert data["domain_status"] == DomainStatus.MANAGER_ACTION_REQUIRED.value
+    assert data["domain_status"] == DomainStatus.CLOSED.value
     assert note in data["manager_notes"]
 
 

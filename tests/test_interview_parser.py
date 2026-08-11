@@ -76,7 +76,7 @@ def test_past_scheduled_interview():
     # Current time Aug 3. Interview was Aug 1 at 3 PM EDT (past)
     current = datetime(2026, 8, 3, 12, 0, tzinfo=timezone.utc)
     evaluate_interview_status(facts, current)
-    assert facts.interview_status == "Interview Awaiting Confirmation"
+    assert facts.interview_status == "Interview Completed"
 
 def test_reschedule_ambiguity():
     facts = ConversationFacts()

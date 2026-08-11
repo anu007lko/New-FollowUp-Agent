@@ -12,17 +12,24 @@ import { playSound } from '../utils/audio';
 interface RecordWorkspaceProps {
   record: FullRecord | null;
   loading: boolean;
+  initialActionModal?: string | null;
   onClose: () => void;
   onRefreshRecord: (recordId: string) => Promise<FullRecord | void>;
 }
 
 type PanelTab = 'overview' | 'conversation' | 'notes' | 'details';
 
-export function RecordWorkspace({ record, loading, onClose, onRefreshRecord }: RecordWorkspaceProps) {
+export function RecordWorkspace({ record, loading, initialActionModal, onClose, onRefreshRecord }: RecordWorkspaceProps) {
   const [activeTab, setActiveTab] = useState<PanelTab>('overview');
   const [expandedEntries, setExpandedEntries] = useState<Set<string>>(new Set());
   const [newestFirst, setNewestFirst] = useState(true);
-  const [activeModal, setActiveModal] = useState<string | null>(null);
+  const [activeModal, setActiveModal] = useState<string | null>(initialActionModal || null);
+
+  useEffect(() => {
+    if (initialActionModal) {
+      setActiveModal(initialActionModal);
+    }
+  }, [initialActionModal, record?.id]);
   const [selectedSuggestion, setSelectedSuggestion] = useState<LinkedInterviewSuggestion | null>(null);
   const [selectedLinked, setSelectedLinked] = useState<LinkedConversation | null>(null);
   const [conflictAcknowledged, setConflictAcknowledged] = useState(false);
@@ -104,6 +111,7 @@ export function RecordWorkspace({ record, loading, onClose, onRefreshRecord }: R
           'Content-Type': 'application/json',
           'X-CSRF-Token': csrfToken,
         },
+        body: JSON.stringify({ record_version: record.record_version }),
       });
 
       if (res.status === 200) {
@@ -113,7 +121,8 @@ export function RecordWorkspace({ record, loading, onClose, onRefreshRecord }: R
       } else if (res.status === 404) {
         setRefreshMessage({ type: 'error', text: 'This record is no longer available.' });
       } else if (res.status === 409) {
-        setRefreshMessage({ type: 'error', text: 'This record changed while refreshing. Please try again.' });
+        await onRefreshRecord(targetRecordId);
+        setRefreshMessage({ type: 'error', text: 'This record changed elsewhere. The latest state has been loaded; please review and try again.' });
       } else if (res.status === 503) {
         setRefreshMessage({ type: 'error', text: 'Thread refresh is currently disabled.' });
       } else {
@@ -397,61 +406,95 @@ export function RecordWorkspace({ record, loading, onClose, onRefreshRecord }: R
                   </div>
                 )}
 
-                {/* Why this status — disclosure card */}
-                {record.structured_evidence && (
-                  <div className="panel-evidence-card">
-                    <button
-                      className="panel-evidence-toggle"
-                      onClick={() => setShowEvidence(!showEvidence)}
-                      aria-expanded={showEvidence}
-                    >
-                      <span>Why this status?</span>
-                      <span className={`collapse-chevron ${showEvidence ? 'collapse-chevron-open' : ''}`}>
-                        <IconChevronRight size={14} />
-                      </span>
-                    </button>
-                    {showEvidence && (
-                      <div className="panel-evidence-content">
-                        <div className="panel-evidence-row">
-                          <span className="panel-evidence-label">Category</span>
-                          <span className="panel-evidence-value">{record.structured_evidence.category}</span>
-                        </div>
-                        <div className="panel-evidence-row">
-                          <span className="panel-evidence-label">Workflow Status</span>
-                          <span className="panel-evidence-value">{record.structured_evidence.workflow_status}</span>
-                        </div>
-                        <div className="panel-evidence-row">
-                          <span className="panel-evidence-label">Reason</span>
-                          <span className="panel-evidence-value">{record.structured_evidence.reason_code}</span>
-                        </div>
-                        {record.structured_evidence.confidence_label && (
+                {/* Current Status / Action Required — disclosure card */}
+                {record.structured_evidence && (() => {
+                  const ds = record.domain_status;
+                  let cardLabel = 'Current Status: ' + ds;
+                  let cardType: 'action' | 'status' = 'status';
+                  let cardIcon = 'ℹ';
+                  let cardReason = record.structured_evidence.reason_code || '';
+
+                  if (ds === 'PendingFollowUp') {
+                    cardLabel = 'Action Required: Follow Up'; cardType = 'action'; cardIcon = '⚡';
+                    cardReason = cardReason || 'Follow-up timer reached · Review before drafting.';
+                  } else if (ds === 'InterviewAwaitingConfirmation') {
+                    cardLabel = 'Action Required: Confirm Interview'; cardType = 'action'; cardIcon = '⚡';
+                    cardReason = cardReason || 'Interview event detected · Confirm the latest outcome.';
+                  } else if (ds === 'InterviewRequestScheduled' || ds === 'InterviewScheduled') {
+                    cardLabel = 'Current Status: Interview Scheduled'; cardType = 'status'; cardIcon = 'ℹ';
+                    cardReason = cardReason || 'Invite found · Monitor the interview workflow.';
+                  } else if (ds === 'NeedsReview' || ds === 'NewSubmission') {
+                    cardLabel = 'Action Required: Set Outcome'; cardType = 'action'; cardIcon = '⚡';
+                    cardReason = cardReason || 'Uncertain response · Manager review required.';
+                  } else if (ds === 'FeedbackDue' || ds === 'AwaitingFeedback') {
+                    cardLabel = 'Action Required: Record Feedback'; cardType = 'action'; cardIcon = '⚡';
+                    cardReason = cardReason || 'Feedback window reached · Record the outcome.';
+                  } else if (ds === 'ManagerActionRequired') {
+                    cardLabel = 'Action Required: Manager Review'; cardType = 'action'; cardIcon = '⚡';
+                    cardReason = cardReason || 'Client response detected · Review before closing.';
+                  }
+
+                  return (
+                    <div className={`panel-evidence-card ${cardType === 'action' ? 'panel-evidence-card-action' : 'panel-evidence-card-status'}`}>
+                      <button
+                        className="panel-evidence-toggle"
+                        onClick={() => setShowEvidence(!showEvidence)}
+                        aria-expanded={showEvidence}
+                      >
+                        <span className="panel-evidence-toggle-label">
+                          <span className={`panel-evidence-icon ${cardType === 'action' ? 'panel-evidence-icon-action' : 'panel-evidence-icon-status'}`}>{cardIcon}</span>
+                          <span className="panel-evidence-title-group">
+                            <span className="panel-evidence-title">{cardLabel}</span>
+                            <span className="panel-evidence-reason">{cardReason}</span>
+                          </span>
+                        </span>
+                        <span className={`collapse-chevron ${showEvidence ? 'collapse-chevron-open' : ''}`}>
+                          <IconChevronRight size={14} />
+                        </span>
+                      </button>
+                      {showEvidence && (
+                        <div className="panel-evidence-content">
                           <div className="panel-evidence-row">
-                            <span className="panel-evidence-label">Evidence Confidence</span>
-                            <span className="panel-evidence-value">{record.structured_evidence.confidence_label}</span>
+                            <span className="panel-evidence-label">Category</span>
+                            <span className="panel-evidence-value">{record.structured_evidence.category}</span>
                           </div>
-                        )}
-                        {record.structured_evidence.interview_date && (
                           <div className="panel-evidence-row">
-                            <span className="panel-evidence-label">Detected Date/Time</span>
-                            <span className="panel-evidence-value">
-                              {record.structured_evidence.interview_date} {record.structured_evidence.interview_time || ''} {record.structured_evidence.timezone || ''}
-                            </span>
+                            <span className="panel-evidence-label">Workflow Status</span>
+                            <span className="panel-evidence-value">{record.structured_evidence.workflow_status}</span>
                           </div>
-                        )}
-                        <div className="panel-evidence-row">
-                          <span className="panel-evidence-label">Messages Evaluated</span>
-                          <span className="panel-evidence-value">{record.structured_evidence.logical_messages_evaluated}</span>
+                          <div className="panel-evidence-row">
+                            <span className="panel-evidence-label">Reason</span>
+                            <span className="panel-evidence-value">{record.structured_evidence.reason_code}</span>
+                          </div>
+                          {record.structured_evidence.confidence_label && (
+                            <div className="panel-evidence-row">
+                              <span className="panel-evidence-label">Evidence Confidence</span>
+                              <span className="panel-evidence-value">{record.structured_evidence.confidence_label}</span>
+                            </div>
+                          )}
+                          {record.structured_evidence.interview_date && (
+                            <div className="panel-evidence-row">
+                              <span className="panel-evidence-label">Detected Date/Time</span>
+                              <span className="panel-evidence-value">
+                                {record.structured_evidence.interview_date} {record.structured_evidence.interview_time || ''} {record.structured_evidence.timezone || ''}
+                              </span>
+                            </div>
+                          )}
+                          <div className="panel-evidence-row">
+                            <span className="panel-evidence-label">Messages Evaluated</span>
+                            <span className="panel-evidence-value">{record.structured_evidence.logical_messages_evaluated}</span>
+                          </div>
+                          {record.structured_evidence.timer_anchor_timestamp && (
+                            <div className="panel-evidence-row">
+                              <span className="panel-evidence-label">Timer Anchor</span>
+                              <span className="panel-evidence-value">{formatTimestamp(record.structured_evidence.timer_anchor_timestamp)}</span>
+                            </div>
+                          )}
                         </div>
-                        {record.structured_evidence.timer_anchor_timestamp && (
-                          <div className="panel-evidence-row">
-                            <span className="panel-evidence-label">Timer Anchor</span>
-                            <span className="panel-evidence-value">{formatTimestamp(record.structured_evidence.timer_anchor_timestamp)}</span>
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
+                      )}
+                    </div>
+                  );
+                })()}
               </section>
 
               {/* Interview Suggestions */}

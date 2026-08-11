@@ -5,6 +5,11 @@ Binds strictly to loopback interface 127.0.0.1.
 
 import os
 import sys
+from dotenv import load_dotenv
+
+# Load environment variables from .env file if present
+load_dotenv()
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,15 +26,17 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Initializing application startup checks...")
-    try:
-        res = daily_review_engine.check_and_run_startup_catchup()
-        if res:
-            logger.info(f"Startup Daily Review Catch-Up executed: {res.to_dict()}")
-    except Exception as e:
-        logger.error(f"Startup Daily Review check encountered error: {e}")
-    daily_review_engine.start_scheduler()
+    if os.environ.get("ENVIRONMENT") != "test":
+        try:
+            res = daily_review_engine.check_and_run_startup_catchup()
+            if res:
+                logger.info(f"Startup Daily Review Catch-Up executed: {res.to_dict()}")
+        except Exception as e:
+            logger.error(f"Startup Daily Review check encountered error: {e}")
+        daily_review_engine.start_scheduler()
     yield
-    daily_review_engine.stop_scheduler()
+    if os.environ.get("ENVIRONMENT") != "test":
+        daily_review_engine.stop_scheduler()
     logger.info("Application shutdown complete.")
 
 app = FastAPI(

@@ -76,6 +76,24 @@ def test_generic_acknowledgement():
     evaluate_in_evaluation_status(facts, datetime.now(timezone.utc))
     assert facts.outcome_status is None
 
+
+def test_fitment_review_pending():
+    facts = ConversationFacts()
+    facts.latest_inbound_message = create_inbound_fact(
+        "These profiles were not evaluated. Please evaluate these profiles and share feedback on fitment."
+    )
+    evaluate_in_evaluation_status(facts, datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc))
+    assert facts.outcome_status == "In Evaluation"
+
+
+def test_candidate_coordination_required():
+    facts = ConversationFacts()
+    facts.latest_inbound_message = create_inbound_fact(
+        "We tried reaching Ashutosh and he was not picking up the call. Please check on his availability."
+    )
+    evaluate_in_evaluation_status(facts, datetime.now(timezone.utc))
+    assert facts.outcome_status == "Candidate Coordination"
+
 def test_quoted_history_false_positive():
     text = """Thanks.
 -----Original Message-----

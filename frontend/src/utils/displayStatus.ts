@@ -1,56 +1,92 @@
 // Single authoritative display-status mapping.
-// All components must use this utility — never duplicate status logic.
+// Visual token map keyed by backend DisplayTone and DTOs.
 
 export interface DisplayStatus {
   label: string;
-  colorVar: string;    // CSS custom property name, e.g. '--status-review'
+  colorVar: string;    // CSS custom property name
   className: string;   // CSS class for pill styling
-  description: string; // One-line explanation for metric cards
-  icon: string;        // Key for icon context (not used for rendering directly)
+  description: string; // Explanation
+  icon: string;
 }
 
-const STATUS_MAP: Record<string, DisplayStatus> = {
-  AwaitingResponse:              { label: 'Awaiting Response', colorVar: '--status-awaiting',   className: 'status-awaiting',    description: 'Waiting for external reply',             icon: 'clock' },
-  InterviewAwaitingConfirmation: { label: 'Interview Awaiting Confirmation', colorVar: '--status-interview', className: 'status-interview', description: 'Interview needs manager confirmation',   icon: 'calendar' },
-  NewSubmission:                 { label: 'New Submission',    colorVar: '--status-review',     className: 'status-review',      description: 'New submission needs review',             icon: 'mail' },
-  NeedsReview:                   { label: 'Needs Review',      colorVar: '--status-review',     className: 'status-review',      description: 'Requires manager review and decision',   icon: 'eye' },
-  AwaitingFeedback:              { label: 'Awaiting Feedback', colorVar: '--status-awaiting',   className: 'status-awaiting',    description: 'Feedback expected from client or team',   icon: 'clock' },
-  PendingFollowUp:               { label: 'Follow-up Due',     colorVar: '--status-followup',   className: 'status-followup',    description: 'Follow-up is overdue or due soon',       icon: 'alert' },
-  FeedbackDue:                   { label: 'Feedback Due',      colorVar: '--status-feedback',   className: 'status-feedback',    description: 'Feedback deadline approaching or passed', icon: 'alert' },
-  ManagerActionRequired:         { label: 'Action Required',   colorVar: '--status-action',     className: 'status-action',      description: 'Manager decision is needed',             icon: 'alert' },
-  InEvaluation:                  { label: 'In Evaluation',     colorVar: '--status-evaluation', className: 'status-evaluation',  description: 'Currently under evaluation',             icon: 'search' },
-  InterviewRequestScheduled:     { label: 'Interview',         colorVar: '--status-interview',  className: 'status-interview',   description: 'Interview scheduled or requested',       icon: 'calendar' },
-  Closed:                        { label: 'Closed',            colorVar: '--status-closed',     className: 'status-closed',      description: 'Record closed and archived',             icon: 'check' },
-  ClientRejected:                { label: 'Rejected',          colorVar: '--status-closed',     className: 'status-closed',      description: 'Client rejected the candidate',          icon: 'close' },
-  PositionClosed:                { label: 'Position Closed',   colorVar: '--status-closed',     className: 'status-closed',      description: 'Position is no longer open',             icon: 'close' },
+const TONE_MAP: Record<string, { colorVar: string; className: string; icon: string }> = {
+  review:    { colorVar: '--status-review',    className: 'status-review',    icon: 'eye' },
+  tracking:  { colorVar: '--status-tracking',  className: 'status-tracking',  icon: 'clock' },
+  action:    { colorVar: '--status-action',    className: 'status-action',    icon: 'alert' },
+  interview: { colorVar: '--status-interview', className: 'status-interview', icon: 'calendar' },
+  awaiting:  { colorVar: '--status-awaiting',  className: 'status-awaiting',  icon: 'clock' },
+  feedback:  { colorVar: '--status-feedback',  className: 'status-feedback',  icon: 'alert' },
+  closed:    { colorVar: '--status-closed',    className: 'status-closed',    icon: 'check' },
 };
 
-const INCOMPLETE: DisplayStatus = {
-  label: 'Incomplete', colorVar: '--status-incomplete', className: 'status-incomplete',
-  description: 'Missing conversation data', icon: 'warning'
+const LEGACY_STATUS_MAP: Record<string, DisplayStatus> = {
+  NeedsReview:                   { label: 'Needs Review',      colorVar: '--status-review',     className: 'status-review',      description: 'Requires manager review', icon: 'eye' },
+  Tracking:                      { label: 'Tracking',          colorVar: '--status-tracking',   className: 'status-tracking',    description: 'Active tracking',        icon: 'clock' },
+  ActionRequired:                { label: 'Action Required',   colorVar: '--status-action',     className: 'status-action',      description: 'Manager action needed',   icon: 'alert' },
+  InterviewScheduled:            { label: 'Interview Scheduled', colorVar: '--status-interview', className: 'status-interview', description: 'Interview scheduled',    icon: 'calendar' },
+  FeedbackPending:               { label: 'Feedback Pending',  colorVar: '--status-awaiting',   className: 'status-awaiting',    description: 'Awaiting feedback',      icon: 'clock' },
+  FeedbackDue:                   { label: 'Feedback Due',      colorVar: '--status-feedback',   className: 'status-feedback',    description: 'Feedback overdue',       icon: 'alert' },
+  Closed:                        { label: 'Closed',            colorVar: '--status-closed',     className: 'status-closed',      description: 'Record closed',          icon: 'check' },
+  // Backward compatibility aliases
+  AwaitingResponse:              { label: 'Tracking',          colorVar: '--status-tracking',   className: 'status-tracking',    description: 'Active tracking',        icon: 'clock' },
+  InterviewAwaitingConfirmation: { label: 'Interview Scheduled', colorVar: '--status-interview', className: 'status-interview', description: 'Interview scheduled',    icon: 'calendar' },
+  NewSubmission:                 { label: 'Needs Review',      colorVar: '--status-review',     className: 'status-review',      description: 'Requires manager review', icon: 'mail' },
+  AwaitingFeedback:              { label: 'Feedback Pending',  colorVar: '--status-awaiting',   className: 'status-awaiting',    description: 'Awaiting feedback',      icon: 'clock' },
+  PendingFollowUp:               { label: 'Action Required',   colorVar: '--status-action',     className: 'status-action',      description: 'Action required',        icon: 'alert' },
+  ManagerActionRequired:         { label: 'Action Required',   colorVar: '--status-action',     className: 'status-action',      description: 'Action required',        icon: 'alert' },
+  InEvaluation:                  { label: 'Tracking',          colorVar: '--status-tracking',   className: 'status-tracking',    description: 'Active tracking',        icon: 'search' },
+  InterviewRequestScheduled:     { label: 'Interview Scheduled', colorVar: '--status-interview', className: 'status-interview', description: 'Interview scheduled',    icon: 'calendar' },
+  DuplicateSubmission:           { label: 'Duplicate Submission', colorVar: '--status-closed',  className: 'status-closed',      description: 'Duplicate submission',   icon: 'close' },
+  ClientRejected:                { label: 'Client Rejected',   colorVar: '--status-closed',     className: 'status-closed',      description: 'Client rejected',        icon: 'close' },
+  PositionClosed:                { label: 'Position Closed',   colorVar: '--status-closed',     className: 'status-closed',      description: 'Position closed',        icon: 'close' },
 };
 
 const FALLBACK: DisplayStatus = {
-  label: 'Unknown', colorVar: '--status-closed', className: 'status-closed',
-  description: 'Unrecognized status', icon: 'help'
+  label: 'Needs Review', colorVar: '--status-review', className: 'status-review',
+  description: 'Requires manager review', icon: 'help'
 };
 
 /**
- * Returns the display status for a record.
- * @param domainStatus - The raw domain_status from the backend
- * @param threadMessageCount - Number of thread messages (0 = legacy placeholder)
+ * Returns the display status for a record. Uses backend-supplied display metadata if available.
  */
-export function getDisplayStatus(domainStatus: string, threadMessageCount?: number): DisplayStatus {
-  // Legacy placeholders: NewSubmission with no messages
-  if (domainStatus === 'NewSubmission' && threadMessageCount !== undefined && threadMessageCount === 0) {
-    return INCOMPLETE;
+export function getDisplayStatus(
+  domainStatus: string,
+  _threadMessageCount?: number,
+  category?: string,
+  tone?: string,
+  backendLabel?: string
+): DisplayStatus {
+  if (backendLabel && tone && TONE_MAP[tone]) {
+    const t = TONE_MAP[tone];
+    return {
+      label: backendLabel,
+      colorVar: t.colorVar,
+      className: t.className,
+      description: backendLabel,
+      icon: t.icon
+    };
   }
-  return STATUS_MAP[domainStatus] || FALLBACK;
+
+  if (_threadMessageCount === 0 && (domainStatus === 'NewSubmission' || domainStatus === 'NeedsReview')) {
+    return { label: 'Incomplete', colorVar: '--status-review', className: 'status-review', description: 'Incomplete record', icon: 'help' };
+  }
+
+  if (category === 'Duplicate Submission' || category === 'Duplicate submission entry') {
+    return { label: 'Duplicate Submission', colorVar: '--status-closed', className: 'status-closed', description: 'Duplicate submission', icon: 'close' };
+  }
+  if (category === 'Client Rejected') {
+    return { label: 'Client Rejected', colorVar: '--status-closed', className: 'status-closed', description: 'Client rejected', icon: 'close' };
+  }
+  if (category === 'Position Closed') {
+    return { label: 'Position Closed', colorVar: '--status-closed', className: 'status-closed', description: 'Position closed', icon: 'close' };
+  }
+
+  return LEGACY_STATUS_MAP[domainStatus] || FALLBACK;
 }
 
 /** Human-readable label only */
-export function getDisplayLabel(domainStatus: string, threadMessageCount?: number): string {
-  return getDisplayStatus(domainStatus, threadMessageCount).label;
+export function getDisplayLabel(domainStatus: string, _threadMessageCount?: number, category?: string, tone?: string, backendLabel?: string): string {
+  return getDisplayStatus(domainStatus, _threadMessageCount, category, tone, backendLabel).label;
 }
 
 /** Check if a record has interview-related status */
@@ -59,6 +95,7 @@ export function isInterviewRelated(domainStatus: string, interviewState?: string
     || domainStatus === 'InterviewScheduled'
     || domainStatus === 'InterviewAwaitingConfirmation'
     || domainStatus === 'AwaitingFeedback'
+    || domainStatus === 'FeedbackPending'
     || domainStatus === 'FeedbackDue'
     || (interviewState !== undefined && interviewState !== null && interviewState !== '' && interviewState !== 'None' && interviewState !== 'none');
 }

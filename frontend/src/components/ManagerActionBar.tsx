@@ -3,15 +3,36 @@ import { OverflowMenu } from './OverflowMenu';
 import { IconWarning } from './icons';
 import { playSound } from '../utils/audio';
 
+interface ActionDTO {
+  action_id: string;
+  label: string;
+  style: 'primary' | 'secondary' | 'danger' | 'ghost';
+  execution_kind: 'workflow_mutation' | 'draft_command' | 'navigation';
+  requires_confirmation?: boolean;
+}
+
 interface ManagerActionBarProps {
   record: FullRecord;
   onOpenModal: (actionType: string) => void;
   draftCreationAvailable?: boolean;
 }
 
-export function ManagerActionBar({ record, onOpenModal, draftCreationAvailable = false }: ManagerActionBarProps) {
-  const ds = record.domain_status;
-  const isIncomplete = (!record.timeline || record.timeline.length === 0) || (record.thread_message_count === 0);
+function openModalForAction(action_id: string, onOpenModal: (type: string) => void) {
+  if (action_id === 'CREATE_DRAFT' || action_id === 'REVIEW_FOLLOW_UP_DRAFT') onOpenModal('followup');
+  else if (action_id === 'REVIEW_OUTCOME') onOpenModal('review_outcome');
+  else if (action_id === 'CLOSE_RECORD') onOpenModal('close');
+  else if (action_id === 'MARK_DUPLICATE_SUBMISSION') onOpenModal('action_duplicate');
+  else if (action_id === 'REOPEN_RECORD') onOpenModal('reopen');
+  else if (action_id === 'ADD_NOTE') onOpenModal('note');
+  else if (action_id === 'INTERVIEW_CONFIRMATION') onOpenModal('interview');
+  else onOpenModal(action_id.toLowerCase());
+}
+
+export function ManagerActionBar({ record, onOpenModal, draftCreationAvailable: _draftCreationAvailable = false }: ManagerActionBarProps) {
+  const workflow = (record as any).workflow;
+  const allowedActions: ActionDTO[] = workflow?.allowed_actions || [];
+
+  const isIncomplete = (!record.timeline || record.timeline.length === 0) && (!record.logical_message_count && record.thread_message_count === 0);
 
   if (isIncomplete) {
     return (
@@ -24,114 +45,68 @@ export function ManagerActionBar({ record, onOpenModal, draftCreationAvailable =
     );
   }
 
-  if (ds === 'Closed') {
+  // If backend workflow allowed_actions exist, render directly from DTO
+  if (allowedActions.length > 0) {
+    const primaryDTO = allowedActions.find(a => a.style === 'primary');
+    const secondaryDTO = allowedActions.find(a => a.style === 'secondary');
+
+    const overflowDTOs = allowedActions.filter(
+      a => a !== primaryDTO && a !== secondaryDTO
+    );
+
+    const overflowItems = overflowDTOs.map(a => ({
+      label: a.label,
+      onClick: () => {
+        playSound('click');
+        openModalForAction(a.action_id, onOpenModal);
+      },
+      danger: a.style === 'danger'
+    }));
+
     return (
-      <div className="manager-action-bar" role="region" aria-label="Record action bar">
-        <button
-          className="btn-action btn-primary"
-          onClick={() => { playSound('click'); onOpenModal('reopen'); }}
-          aria-label="Reopen record"
-        >
-          Reopen Record
-        </button>
+      <div className="manager-action-bar-wrap">
+        <div className="manager-action-bar" role="region" aria-label="Record action bar">
+          {primaryDTO && (
+            <button
+              className="btn-action btn-primary"
+              onClick={() => {
+                playSound('click');
+                openModalForAction(primaryDTO.action_id, onOpenModal);
+              }}
+              aria-label={primaryDTO.label}
+            >
+              {primaryDTO.label}
+            </button>
+          )}
+
+          {secondaryDTO && (
+            <button
+              className="btn-action btn-secondary"
+              onClick={() => {
+                playSound('click');
+                openModalForAction(secondaryDTO.action_id, onOpenModal);
+              }}
+              aria-label={secondaryDTO.label}
+              style={{ marginLeft: '8px' }}
+            >
+              {secondaryDTO.label}
+            </button>
+          )}
+
+          <div className="action-bar-spacer" />
+          {overflowItems.length > 0 && <OverflowMenu items={overflowItems} />}
+        </div>
       </div>
     );
-  }
-
-  // Build primary + secondary actions based on status
-  let primaryLabel = 'Add Note';
-  let primaryAction = 'note';
-  const overflowItems: { label: string; onClick: () => void; danger?: boolean; disabled?: boolean }[] = [];
-
-  let interviewDetail = '';
-
-  if (ds === 'PendingFollowUp') {
-    primaryLabel = draftCreationAvailable ? 'Request Follow-up' : 'Outlook Drafts Paused';
-    primaryAction = draftCreationAvailable ? 'followup' : '';
-    overflowItems.push({ label: 'Add Note', onClick: () => onOpenModal('note') });
-  } else if (ds === 'InterviewAwaitingConfirmation' || ds === 'InterviewScheduled' || ds === 'InterviewRequestScheduled') {
-    const istate = (record.interview_state || '').toLowerCase();
-    if (istate === 'scheduled' || istate === 'rescheduled' || ds === 'InterviewRequestScheduled' || ds === 'InterviewScheduled') {
-      primaryLabel = 'Update Interview';
-    } else if (istate === 'completed' || istate === 'cancelled' || istate === 'not_confirmed') {
-      primaryLabel = 'Update Interview Status';
-    } else {
-      primaryLabel = 'Confirm Interview';
-    }
-    primaryAction = 'interview';
-    overflowItems.push({ label: 'Add Note', onClick: () => onOpenModal('note') });
-
-    const dateVal = record.interview_date || record.structured_evidence?.interview_date;
-    const timeVal = record.interview_time || record.structured_evidence?.interview_time;
-    const tzVal = record.interview_timezone || record.structured_evidence?.timezone;
-    const dateTimeStr = [dateVal, timeVal].filter(Boolean).join(' at ');
-
-    if (istate === 'scheduled' || ds === 'InterviewRequestScheduled' || ds === 'InterviewScheduled') {
-      interviewDetail = dateTimeStr ? `Scheduled for ${dateTimeStr}${tzVal ? ` (${tzVal})` : ''}` : 'Interview Scheduled';
-    } else if (istate === 'rescheduled') {
-      interviewDetail = dateTimeStr ? `Rescheduled for ${dateTimeStr}${tzVal ? ` (${tzVal})` : ''}` : 'Interview Rescheduled';
-    } else if (istate === 'completed') {
-      interviewDetail = 'Interview Completed';
-    } else if (istate === 'cancelled') {
-      interviewDetail = 'Interview Cancelled';
-    } else if (istate === 'not_confirmed') {
-      interviewDetail = 'Interview Not Confirmed';
-    }
-  } else if (ds === 'ManagerActionRequired') {
-    const category = record.structured_evidence?.category;
-    const isClosedOutcome = category === 'Rejection' || category === 'Position Closed' || category === 'Client Rejected';
-
-    if (isClosedOutcome) {
-      primaryLabel = 'Close Record';
-      primaryAction = 'close';
-      overflowItems.push({ label: 'Review Outcome', onClick: () => onOpenModal('review_outcome') });
-      overflowItems.push({ label: 'Add Note', onClick: () => onOpenModal('note') });
-    } else {
-      primaryLabel = 'Review Outcome';
-      primaryAction = 'review_outcome';
-      overflowItems.push({ label: 'Add Note', onClick: () => onOpenModal('note') });
-    }
-  } else if (ds === 'NeedsReview' || ds === 'NewSubmission') {
-    primaryLabel = 'Set Outcome';
-    primaryAction = 'set_outcome';
-    overflowItems.push({ label: 'Request Follow-up', onClick: () => onOpenModal('followup'), disabled: !draftCreationAvailable });
-    overflowItems.push({ label: 'Add Note', onClick: () => onOpenModal('note') });
-  } else if (ds === 'AwaitingFeedback' || ds === 'FeedbackDue') {
-    primaryLabel = 'Record Feedback';
-    primaryAction = 'set_outcome';
-    overflowItems.push({ label: 'Add Note', onClick: () => onOpenModal('note') });
-  } else if (ds === 'AwaitingResponse') {
-    primaryLabel = 'Add Note';
-    primaryAction = 'note';
-    overflowItems.push({ label: 'Request Follow-up', onClick: () => onOpenModal('followup'), disabled: !draftCreationAvailable });
-  }
-
-  // Close always in overflow as danger unless it is already the primary action
-  if (primaryAction !== 'close') {
-    overflowItems.push({ label: 'Close Record', onClick: () => onOpenModal('close'), danger: true });
   }
 
   return (
     <div className="manager-action-bar-wrap">
       <div className="manager-action-bar" role="region" aria-label="Record action bar">
-        <button
-          className="btn-action btn-primary"
-          onClick={() => { playSound('click'); primaryAction && onOpenModal(primaryAction); }}
-          disabled={!primaryAction}
-          title={!primaryAction ? 'Outlook draft creation is paused in the local service.' : undefined}
-          aria-label={primaryLabel}
-        >
-          {primaryLabel}
+        <button className="btn-action btn-secondary" disabled style={{ opacity: 0.6, cursor: 'not-allowed' }}>
+          No actions available
         </button>
-        <div className="action-bar-spacer" />
-        <OverflowMenu items={overflowItems} />
       </div>
-      {interviewDetail && (
-        <div className="manager-action-detail" style={{ fontSize: '0.8rem', color: 'var(--figma-quiet, #b9bdc7)', marginTop: '6px', display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <span>ℹ</span>
-          <span>{interviewDetail}</span>
-        </div>
-      )}
     </div>
   );
 }

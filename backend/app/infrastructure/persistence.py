@@ -307,6 +307,16 @@ class EncryptedPersistenceEngine:
                     payload_ciphertext TEXT NOT NULL
                 );
             """)
+
+            # Ensure classification snapshot columns exist
+            cursor = conn.execute("PRAGMA table_info(submission_records)")
+            cols = {row[1] for row in cursor.fetchall()}
+            if "classification_category" not in cols:
+                conn.execute("ALTER TABLE submission_records ADD COLUMN classification_category TEXT;")
+            if "classification_updated_at" not in cols:
+                conn.execute("ALTER TABLE submission_records ADD COLUMN classification_updated_at TEXT;")
+            if "classifier_version" not in cols:
+                conn.execute("ALTER TABLE submission_records ADD COLUMN classifier_version TEXT;")
             conn.commit()
 
     def exists_by_immutable_id(self, graph_immutable_id: str) -> bool:
@@ -424,12 +434,45 @@ class EncryptedPersistenceEngine:
 
         return True, False
 
+    def _canonical_event_str(self, item: dict) -> str:
+        """Compute deterministic canonical JSON string of an audit event dict."""
+        return json.dumps(item, sort_keys=True)
+
+    def _validate_audit_timeline_append_only(self, existing_payload: dict, new_payload: dict) -> None:
+        """
+        Enforces that incoming new_payload preserves all historical audit events stored in existing_payload
+        in exact sequence and with 100% identical canonical content. New audit events may only be appended.
+        """
+        from backend.app.domain.audit_trail import is_audit_event
+
+        existing_events = [e for e in existing_payload.get("timeline", []) if is_audit_event(e)]
+        proposed_events = [e for e in new_payload.get("timeline", []) if is_audit_event(e)]
+
+        if len(proposed_events) < len(existing_events):
+            raise ValueError(
+                f"Audit timeline append-only constraint violation: proposed audit timeline "
+                f"has fewer audit events ({len(proposed_events)}) than stored audit timeline ({len(existing_events)})."
+            )
+
+        for i, exist_evt in enumerate(existing_events):
+            prop_evt = proposed_events[i]
+            if self._canonical_event_str(exist_evt) != self._canonical_event_str(prop_evt):
+                raise ValueError(
+                    f"Audit timeline append-only constraint violation: historical audit event at index {i} "
+                    f"(entry_id={exist_evt.get('entry_id')}) was modified, altered, or reordered."
+                )
+
     def save_record_payload(self, record_id: str, payload: dict, domain_status: str) -> None:
         """Insert or update record payload and domain status in one explicit transaction."""
-        ciphertext = self.encryptor.encrypt(json.dumps(payload))
+        snapshot = self.get_record_payload_snapshot(record_id)
+        if snapshot:
+            self._validate_audit_timeline_append_only(snapshot[0], payload)
+
         meta = payload.get("metadata", {}) if isinstance(payload.get("metadata"), dict) else {}
         graph_id = payload.get("graph_immutable_id") or f"graph-{record_id}"
         conv_id = payload.get("conversation_id") or f"conv-{record_id}"
+
+        ciphertext = self.encryptor.encrypt(json.dumps(payload))
         job_id = payload.get("job_id") or meta.get("job_id")
         ep_ref = payload.get("ep_reference") or meta.get("ep_reference")
         cand_name = payload.get("candidate_name") or meta.get("candidate_name")
@@ -462,6 +505,10 @@ class EncryptedPersistenceEngine:
 
     def update_record_optimistically(self, record_id: str, payload: dict, domain_status: str, expected_version: int) -> int:
         """Atomically update a record ensuring exact version match."""
+        snapshot = self.get_record_payload_snapshot(record_id)
+        if snapshot:
+            self._validate_audit_timeline_append_only(snapshot[0], payload)
+
         ciphertext = self.encryptor.encrypt(json.dumps(payload))
         meta = payload.get("metadata", {}) if isinstance(payload.get("metadata"), dict) else {}
         graph_id = payload.get("graph_immutable_id") or f"graph-{record_id}"
@@ -787,38 +834,41 @@ class EncryptedPersistenceEngine:
 
             payload["record_version"] = row["record_version"]
             
-            # --- Structured Evidence ---
+            # --- Structured Evidence (Pure read from stored snapshot) ---
             structured_evidence = None
             try:
-                from backend.app.domain.consolidated_classifier import classify_record
-                from backend.app.domain.message_facts import analyze_conversation
                 from backend.app.domain.models import StructuredEvidence
-                
-                facts = analyze_conversation(row["graph_immutable_id"], thread_messages)
-                result = classify_record(
-                    row["graph_immutable_id"], 
-                    thread_messages, 
-                    datetime.now(timezone.utc),
-                    timeline=timeline,
-                    linked_conversations=linked_conversations
-                )
-                
-                timer_ts = facts.timer_anchor_message.timestamp.isoformat() if facts.timer_anchor_message else None
-                latest_logical_ts = facts.messages[-1].timestamp.isoformat() if facts.messages else None
-                
-                cat = payload.get("manager_outcome_category") or result.category
                 status_val = row["domain_status"]
-                reason = "MANAGER_OUTCOME_DECISION" if payload.get("manager_outcome_category") else result.reason_code
-                structured_evidence = StructuredEvidence(
-                    category=cat,
-                    workflow_status=status_val,
-                    reason_code=reason,
-                    timer_anchor_timestamp=timer_ts,
-                    latest_logical_timestamp=latest_logical_ts,
-                    logical_messages_evaluated=len(facts.messages)
-                )
+                close_r = str(payload.get("close_reason") or payload.get("manager_outcome_category") or "").strip()
+                persisted_cat = None
+                try:
+                    persisted_cat = row["classification_category"]
+                except (IndexError, KeyError):
+                    pass
+                if not persisted_cat:
+                    persisted_cat = payload.get("classification_category") or payload.get("manager_outcome_category")
+
+                if status_val in ("AwaitingFeedback", "FeedbackPending", "FeedbackDue"):
+                    cat = "Interview Completed"
+                elif status_val == "Closed" and ("Duplicate" in close_r or "duplicate" in close_r.lower()):
+                    cat = "Duplicate Submission"
+                elif status_val == "Closed" and close_r:
+                    cat = close_r
+                else:
+                    cat = payload.get("manager_outcome_category") or payload.get("classification_category") or persisted_cat
+
+                reason = "MANAGER_OUTCOME_DECISION" if payload.get("manager_outcome_category") else "STORED_SNAPSHOT"
+                if cat:
+                    structured_evidence = StructuredEvidence(
+                        category=cat,
+                        workflow_status=status_val,
+                        reason_code=reason,
+                        timer_anchor_timestamp=None,
+                        latest_logical_timestamp=None,
+                        logical_messages_evaluated=logical_message_count
+                    )
             except Exception as e:
-                logger.error(f"Failed to compute structured evidence: {e}")
+                logger.error(f"Failed to build structured evidence: {e}")
                 
             display_skill, display_customer, display_location = _display_metadata_with_subject_fallback(
                 payload, thread_messages

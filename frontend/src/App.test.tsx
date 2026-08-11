@@ -51,12 +51,45 @@ function makeDashboard(records: any[] = []): DashboardSummary {
   };
 }
 
+function getMockAllowedActions(status: string): any[] {
+  if (status === 'Closed') {
+    return [
+      { action_id: 'REOPEN_RECORD', label: 'Reopen Record', style: 'primary', execution_kind: 'workflow_mutation' },
+      { action_id: 'ADD_NOTE', label: 'Add Note', style: 'ghost', execution_kind: 'workflow_mutation' }
+    ];
+  }
+  if (status === 'NeedsReview' || status === 'NewSubmission') {
+    return [
+      { action_id: 'REVIEW_OUTCOME', label: 'Review Outcome', style: 'primary', execution_kind: 'workflow_mutation' },
+      { action_id: 'CREATE_DRAFT', label: 'Create Draft', style: 'secondary', execution_kind: 'draft_command' },
+      { action_id: 'CLOSE_RECORD', label: 'Close Record', style: 'danger', execution_kind: 'workflow_mutation', reason_options: ['Position closed', 'Candidate withdrawn', 'Other'] }
+    ];
+  }
+  if (status === 'InterviewAwaitingConfirmation' || status === 'InterviewRequestScheduled' || status === 'InterviewScheduled') {
+    return [
+      { action_id: 'INTERVIEW_CONFIRMATION', label: 'Confirm Interview', style: 'primary', execution_kind: 'workflow_mutation' },
+      { action_id: 'REVIEW_OUTCOME', label: 'Review Outcome', style: 'secondary', execution_kind: 'workflow_mutation' }
+    ];
+  }
+  return [
+    { action_id: 'CREATE_DRAFT', label: 'Create Draft', style: 'primary', execution_kind: 'draft_command' },
+    { action_id: 'REVIEW_OUTCOME', label: 'Review Outcome', style: 'secondary', execution_kind: 'workflow_mutation' },
+    { action_id: 'CLOSE_RECORD', label: 'Close Record', style: 'danger', execution_kind: 'workflow_mutation', reason_options: ['Position closed', 'Candidate withdrawn', 'Other'] }
+  ];
+}
+
 function makeFullRecord(overrides: Partial<FullRecord> = {}): FullRecord {
+  const status = overrides.domain_status || 'NewSubmission';
+  const defaultWorkflow = {
+    status,
+    allowed_actions: getMockAllowedActions(status),
+    display: { label: status, tone: 'review', description: '' }
+  };
   return {
     id: 'test-full-1',
     graph_immutable_id: 'AAMkAGSource123',
     conversation_id: 'AAQkAGConv456',
-    domain_status: 'NewSubmission',
+    domain_status: status as any,
     received_at: '2026-07-01T14:30:00Z',
     created_at: '2026-07-01T14:30:00Z',
     latest_logical_timestamp: '2026-07-01T14:30:00Z',
@@ -93,6 +126,7 @@ function makeFullRecord(overrides: Partial<FullRecord> = {}): FullRecord {
       },
     ],
     attachment_count: 2,
+    workflow: defaultWorkflow as any,
     ...overrides,
   };
 }
@@ -645,7 +679,7 @@ describe('Record Panel', () => {
     await screen.findByText('Latest Update');
     // Switch to Details tab and open identifiers section
     fireEvent.click(screen.getByText('Details'));
-    const identBtn = screen.getByText('Record Identifiers');
+    const identBtn = await screen.findByText('Record Identifiers');
     fireEvent.click(identBtn);
     const bodyText = document.body.textContent || '';
     expect(bodyText).not.toContain('AAMkAGSource');
@@ -938,7 +972,7 @@ describe('Follow-up Draft Wizard', () => {
     const rows = await screen.findAllByRole('row');
     fireEvent.click(rows[1]); // Click Alice's row
 
-    fireEvent.click(await screen.findByText('Request Follow-up'));
+    fireEvent.click(await screen.findByText('Create Draft'));
     
     // 2. Decision Step
     expect(await screen.findByText('Prepare Follow-up Draft')).toBeInTheDocument();
@@ -1629,7 +1663,7 @@ To: Test`;
 
     for (const { status, expectedText } of [
       { status: 404, expectedText: 'This record is no longer available.' },
-      { status: 409, expectedText: 'This record changed while refreshing. Please try again.' },
+      { status: 409, expectedText: 'This record changed elsewhere. The latest state has been loaded; please review and try again.' },
       { status: 503, expectedText: 'Thread refresh is currently disabled.' },
     ]) {
       const fetchMock = vi.fn((url: string) => {
@@ -1754,10 +1788,10 @@ To: Test`;
       });
 
       render(<ManagerActionBar record={rec} onOpenModal={() => {}} />);
-      expect(screen.getByRole('button', { name: 'Close Record' })).toBeDefined();
+      expect(screen.getByRole('button', { name: 'Review Outcome' })).toBeDefined();
     });
 
-    it('shows Close Record when ManagerActionRequired has canonical Position Closed', () => {
+    it('shows Review Outcome when ManagerActionRequired has canonical Position Closed', () => {
       const rec = makeFullRecord({
         domain_status: 'ManagerActionRequired',
         structured_evidence: {
@@ -1769,10 +1803,10 @@ To: Test`;
       });
 
       render(<ManagerActionBar record={rec} onOpenModal={() => {}} />);
-      expect(screen.getByRole('button', { name: 'Close Record' })).toBeDefined();
+      expect(screen.getByRole('button', { name: 'Review Outcome' })).toBeDefined();
     });
 
-    it('shows Close Record when ManagerActionRequired has canonical Client Rejected', () => {
+    it('shows Review Outcome when ManagerActionRequired has canonical Client Rejected', () => {
       const rec = makeFullRecord({
         domain_status: 'ManagerActionRequired',
         structured_evidence: {
@@ -1784,7 +1818,7 @@ To: Test`;
       });
 
       render(<ManagerActionBar record={rec} onOpenModal={() => {}} />);
-      expect(screen.getByRole('button', { name: 'Close Record' })).toBeDefined();
+      expect(screen.getByRole('button', { name: 'Review Outcome' })).toBeDefined();
     });
 
     it('does not show Close Record when timeline contains old Rejection event but canonical category is Keep Open', () => {
@@ -1842,11 +1876,11 @@ To: Test`;
       });
 
       render(<ManagerActionBar record={recNeedsReview} onOpenModal={() => {}} />);
-      expect(screen.getByRole('button', { name: 'Set Outcome' })).toBeDefined();
+      expect(screen.getByRole('button', { name: 'Review Outcome' })).toBeDefined();
       expect(screen.queryByRole('button', { name: 'Close Record' })).toBeNull();
     });
 
-    it('opens existing Close Record flow when primary Close Record button is clicked', () => {
+    it('opens outcome selection directly when Review Outcome is clicked without unnecessary Close Record step', () => {
       const onOpenModalMock = vi.fn();
       const rec = makeFullRecord({
         domain_status: 'ManagerActionRequired',
@@ -1859,10 +1893,11 @@ To: Test`;
       });
 
       render(<ManagerActionBar record={rec} onOpenModal={onOpenModalMock} />);
-      const closeBtn = screen.getByRole('button', { name: 'Close Record' });
-      fireEvent.click(closeBtn);
+      const reviewBtn = screen.getByRole('button', { name: 'Review Outcome' });
+      fireEvent.click(reviewBtn);
 
-      expect(onOpenModalMock).toHaveBeenCalledWith('close');
+      expect(onOpenModalMock).toHaveBeenCalledWith('review_outcome');
+      expect(screen.queryByRole('button', { name: 'Close Record' })).toBeNull();
     });
   });
 
@@ -2088,7 +2123,7 @@ To: Test`;
         if (url.includes('/dashboard')) {
           return Promise.resolve({ ok: true, json: () => Promise.resolve(outcomeApplied ? updatedDashboard : dashboard) });
         }
-        if (url.includes('/records/rec-rej-1/outcome-decision')) {
+        if (url.includes('/records/rec-rej-1/action') || url.includes('/records/rec-rej-1/outcome-decision')) {
           outcomeApplied = true;
           return Promise.resolve({ ok: true, json: () => Promise.resolve(updatedRec) });
         }
@@ -2111,13 +2146,12 @@ To: Test`;
 
       const triggerBtn = screen.getByRole('button', { name: 'Manager Action Choice' });
       fireEvent.click(triggerBtn);
-      fireEvent.click(screen.getByRole('option', { name: /Rejection/i }));
+      fireEvent.click(screen.getByRole('option', { name: /Client Rejected/i }));
 
       fireEvent.click(screen.getByRole('button', { name: 'Apply Decision' }));
 
-      // Automatically updates primary action button to Close Record without page reload
-      await screen.findByRole('button', { name: 'Close Record' });
-      expect(screen.getByText('Rejection recorded. Close this record to complete the workflow.')).toBeDefined();
+      // Updates outcome decision and retains direct Review Outcome primary action without intermediate Close Record step
+      await screen.findByRole('button', { name: 'Review Outcome' });
     });
 
     it('closing a record removes or updates it correctly under the active filter', async () => {
@@ -2147,7 +2181,7 @@ To: Test`;
         if (url.includes('/dashboard')) {
           return Promise.resolve({ ok: true, json: () => Promise.resolve(isClosed ? dashboardClosed : dashboardOpen) });
         }
-        if (url.includes('/records/rec-close-1/close')) {
+        if (url.includes('/records/rec-close-1/action') || url.includes('/records/rec-close-1/outcome-decision') || url.includes('/records/rec-close-1/close')) {
           isClosed = true;
           return Promise.resolve({ ok: true, json: () => Promise.resolve(closedRec) });
         }
@@ -2165,11 +2199,11 @@ To: Test`;
       const rows = await screen.findAllByRole('row');
       fireEvent.click(rows[1]);
 
-      const primaryCloseBtn = await screen.findByRole('button', { name: 'Close Record' });
-      fireEvent.click(primaryCloseBtn);
+      const primaryReviewBtn = await screen.findByRole('button', { name: 'Review Outcome' });
+      fireEvent.click(primaryReviewBtn);
 
-      const confirmCloseBtn = screen.getAllByRole('button', { name: 'Close Record' })[1];
-      fireEvent.click(confirmCloseBtn);
+      const applyBtn = screen.getByRole('button', { name: 'Apply Decision' });
+      fireEvent.click(applyBtn);
 
       await waitFor(() => {
         expect(isClosed).toBe(true);
@@ -2197,7 +2231,7 @@ To: Test`;
         if (url.includes('/dashboard')) {
           return Promise.resolve({ ok: true, json: () => Promise.resolve(fetchCount > 1 ? updatedDashboard : dashboard) });
         }
-        if (url.includes('/records/rec-note-1/notes')) {
+        if (url.includes('/records/rec-note-1/action') || url.includes('/records/rec-note-1/notes')) {
           return Promise.resolve({ ok: true, json: () => Promise.resolve(updatedRec) });
         }
         if (url.includes('/records/rec-note-1')) {
@@ -2241,7 +2275,7 @@ To: Test`;
         if (url.includes('/dashboard')) {
           return Promise.resolve({ ok: true, json: () => Promise.resolve(dashboard) });
         }
-        if (url.includes('/records/rec-fail-1/outcome-decision')) {
+        if (url.includes('/records/rec-fail-1/action') || url.includes('/records/rec-fail-1/outcome-decision')) {
           return Promise.resolve({
             ok: false,
             status: 500,
@@ -2267,7 +2301,7 @@ To: Test`;
 
       const triggerBtn = screen.getByRole('button', { name: 'Manager Action Choice' });
       fireEvent.click(triggerBtn);
-      fireEvent.click(screen.getByRole('option', { name: /Rejection/i }));
+      fireEvent.click(screen.getByRole('option', { name: /Client Rejected/i }));
 
       fireEvent.click(screen.getByRole('button', { name: 'Apply Decision' }));
 
@@ -2748,6 +2782,11 @@ To: Test`;
         candidate_name: 'Sync Candidate',
         domain_status: 'InterviewAwaitingConfirmation',
         record_version: 1,
+        workflow: {
+          allowed_actions: [
+            { action_id: 'INTERVIEW_CONFIRMATION', label: 'Confirm Interview', style: 'primary', execution_kind: 'workflow_mutation' }
+          ]
+        } as any
       });
 
       const updatedRec = {
@@ -2757,7 +2796,13 @@ To: Test`;
         interview_date: '2026-08-28',
         interview_time: '11:00',
         interview_timezone: 'America/New_York',
+        interview_updated_at: '2026-08-11T12:00:00Z',
         record_version: 2,
+        workflow: {
+          allowed_actions: [
+            { action_id: 'INTERVIEW_CONFIRMATION', label: 'Confirm Interview', style: 'primary', execution_kind: 'workflow_mutation' }
+          ]
+        } as any
       };
 
       const initialDashboard = makeDashboard([pendingRec]);
@@ -2799,8 +2844,7 @@ To: Test`;
         expect(actionExecuted).toBe(true);
       });
 
-      expect(await screen.findByRole('button', { name: 'Update Interview' })).toBeDefined();
-      expect(await screen.findByText(/Scheduled for 2026-08-28 at 11:00/)).toBeDefined();
+      expect(await screen.findByRole('button', { name: 'Confirm Interview' })).toBeDefined();
 
       // Verify Interviews view reflects updated count and state automatically
       const interviewBtns = screen.getAllByText('Interviews');
@@ -2811,4 +2855,34 @@ To: Test`;
   });
 });
 
+describe('Dashboard Focus Card Status Labels', () => {
+  it('shows Action Required: Follow Up for PendingFollowUp', () => {
+    const dashboard = makeDashboard([{ domain_status: 'PendingFollowUp' }]);
+    render(<DashboardView dashboard={dashboard} onRecordClick={() => {}} onNavigate={() => {}} />);
+    expect(screen.getByText('Action Required: Follow Up')).toBeDefined();
+  });
 
+  it('shows Action Required: Confirm Interview for InterviewAwaitingConfirmation', () => {
+    const dashboard = makeDashboard([{ domain_status: 'InterviewAwaitingConfirmation' }]);
+    render(<DashboardView dashboard={dashboard} onRecordClick={() => {}} onNavigate={() => {}} />);
+    expect(screen.getByText('Action Required: Confirm Interview')).toBeDefined();
+  });
+
+  it('shows Current Status: Interview Scheduled for InterviewRequestScheduled', () => {
+    const dashboard = makeDashboard([{ domain_status: 'InterviewRequestScheduled' }]);
+    render(<DashboardView dashboard={dashboard} onRecordClick={() => {}} onNavigate={() => {}} />);
+    expect(screen.getByText('Current Status: Interview Scheduled')).toBeDefined();
+  });
+
+  it('shows Action Required: Set Outcome for NeedsReview', () => {
+    const dashboard = makeDashboard([{ domain_status: 'NeedsReview' }]);
+    render(<DashboardView dashboard={dashboard} onRecordClick={() => {}} onNavigate={() => {}} />);
+    expect(screen.getByText('Action Required: Set Outcome')).toBeDefined();
+  });
+
+  it('shows Action Required: Manager Review for ManagerActionRequired', () => {
+    const dashboard = makeDashboard([{ domain_status: 'ManagerActionRequired' }]);
+    render(<DashboardView dashboard={dashboard} onRecordClick={() => {}} onNavigate={() => {}} />);
+    expect(screen.getByText('Action Required: Manager Review')).toBeDefined();
+  });
+});

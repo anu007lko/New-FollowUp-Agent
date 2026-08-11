@@ -19,6 +19,12 @@ def test_position_closed():
     evaluate_outcome_status(facts)
     assert facts.outcome_status == "Position Closed"
 
+def test_requirement_closed():
+    facts = ConversationFacts()
+    facts.latest_inbound_message = create_inbound_fact("This requirement is closed, please do not submit profiles.")
+    evaluate_outcome_status(facts)
+    assert facts.outcome_status == "Position Closed"
+
 def test_rejection():
     facts = ConversationFacts()
     facts.latest_inbound_message = create_inbound_fact("We are going to pass on this candidate.")
@@ -39,6 +45,49 @@ def test_duplicate():
     facts.latest_inbound_message = create_inbound_fact("This is a duplicate submission, we already have them.")
     evaluate_outcome_status(facts)
     assert facts.outcome_status == "Duplicate / Already Submitted"
+
+
+def test_short_duplicate_response():
+    facts = ConversationFacts()
+    facts.latest_inbound_message = create_inbound_fact("Thanks but duplicate.")
+    evaluate_outcome_status(facts)
+    assert facts.outcome_status == "Duplicate / Already Submitted"
+
+
+def test_soft_rejection_not_suitable():
+    facts = ConversationFacts()
+    facts.latest_inbound_message = create_inbound_fact(
+        "The profile is not suitable for our role. Please submit other profiles if you have any."
+    )
+    evaluate_outcome_status(facts)
+    assert facts.outcome_status == "Rejection"
+
+
+def test_unable_to_consider_further_overrides_polite_ack():
+    facts = ConversationFacts()
+    facts.latest_inbound_message = create_inbound_fact(
+        "Thanks for sharing. The requirement is Cortex AI Tech Lead. Won't be able to consider further."
+    )
+    evaluate_outcome_status(facts)
+    assert facts.outcome_status == "Rejection"
+
+
+def test_position_on_hold():
+    facts = ConversationFacts()
+    facts.latest_inbound_message = create_inbound_fact(
+        "The position is on hold for now. I will update if it reopens."
+    )
+    evaluate_outcome_status(facts)
+    assert facts.outcome_status == "On Hold"
+
+
+def test_selected_application_requested():
+    facts = ConversationFacts()
+    facts.latest_inbound_message = create_inbound_fact(
+        "Joicy is selected, please share the application."
+    )
+    evaluate_outcome_status(facts)
+    assert facts.outcome_status == "Selected"
 
 def test_conflicting_outcomes():
     facts = ConversationFacts()

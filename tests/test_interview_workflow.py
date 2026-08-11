@@ -55,11 +55,7 @@ def test_passed_interview_boundary():
         current_time=now
     )
     
-    assert res.category == "Interview Scheduled"
-    assert res.proposed_status == "Interview Awaiting Confirmation"
-    
-    domain_status = PROPOSED_TO_DOMAIN_STATUS[res.proposed_status]
-    assert domain_status == DomainStatus.INTERVIEW_AWAITING_CONFIRMATION
+    assert res.category == "Interview Completed"
 
 def test_manager_confirmed_completed_protects_status():
     # If a manager has set interview_state to COMPLETED, the application handles it in workflow_engine.

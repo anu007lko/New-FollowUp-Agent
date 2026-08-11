@@ -34,8 +34,11 @@ function App() {
   }, [sidebarCollapsed]);
 
   // Return focus to selected row after panel close (#18, #20)
+  const [activeActionModal, setActiveActionModal] = useState<string | null>(null);
+
   const handleClosePanel = useCallback(() => {
     closeRecord();
+    setActiveActionModal(null);
     requestAnimationFrame(() => {
       if (lastClickedIdRef.current) {
         const row = document.querySelector(
@@ -48,15 +51,23 @@ function App() {
 
   const handleNavigate = (view: ViewName) => {
     setActiveView(view);
+    setActiveActionModal(null);
     closeRecord();
   };
 
   const handleRecordClick = (id: string) => {
     lastClickedIdRef.current = id;
+    setActiveActionModal(null);
     openRecord(id);
     if (activeView === 'dashboard') {
       setActiveView('records');
     }
+  };
+
+  const handleActionModal = (id: string, actionType: string, _recordVersion?: number) => {
+    lastClickedIdRef.current = id;
+    setActiveActionModal(actionType);
+    openRecord(id);
   };
 
   const handleSearchChange = (q: string) => {
@@ -78,6 +89,7 @@ function App() {
           <DashboardView
             dashboard={dashboard}
             onRecordClick={handleRecordClick}
+            onActionModal={handleActionModal}
             onNavigate={handleNavigate}
           />
         );
@@ -87,6 +99,7 @@ function App() {
           <RecordsView
             records={dashboard.records}
             onRecordClick={handleRecordClick}
+            onActionModal={handleActionModal}
             selectedRecordId={selectedRecord?.id}
             globalSearch={globalSearch}
           />
@@ -128,6 +141,7 @@ function App() {
         <RecordWorkspace
           record={selectedRecord}
           loading={recordLoading}
+          initialActionModal={activeActionModal}
           onClose={handleClosePanel}
           onRefreshRecord={(recordId) => refreshAllData(recordId)}
         />

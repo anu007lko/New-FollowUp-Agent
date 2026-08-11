@@ -1,6 +1,43 @@
 // Shared TypeScript types — single source of truth for API shapes.
 // Never display graph_immutable_id or conversation_id in the UI.
 
+export interface OutcomeOptionDTO {
+  option_id: string;
+  label: string;
+  is_terminal: boolean;
+  resulting_status: string;
+  close_reason?: string | null;
+  requires_note: boolean;
+}
+
+export interface ActionDTO {
+  action_id: string;
+  label: string;
+  style: 'primary' | 'secondary' | 'danger' | 'ghost';
+  execution_kind: 'workflow_mutation' | 'draft_command' | 'ui_navigation';
+  requires_confirmation?: boolean;
+  confirmation_title?: string;
+  confirmation_message?: string;
+  outcome_options?: OutcomeOptionDTO[];
+  reason_options?: string[];
+  locked_reason?: string;
+  note_required_when_reason?: string;
+}
+
+export interface DisplayDTO {
+  label: string;
+  tone: string;
+  description: string;
+}
+
+export interface CompactWorkflowDTO {
+  status: string;
+  evidence_category?: string;
+  queue_membership?: string[];
+  display?: DisplayDTO;
+  allowed_actions?: ActionDTO[];
+}
+
 export interface RecordHeader {
   id: string;
   graph_immutable_id: string;
@@ -8,7 +45,7 @@ export interface RecordHeader {
   job_id?: string;
   ep_reference?: string;
   candidate_name?: string;
-  tcs_eligibility: string;
+  tcs_eligibility?: string;
   domain_status: string;
   received_at: string;
   created_at: string;
@@ -30,6 +67,7 @@ export interface RecordHeader {
   interview_timezone?: string;
   timezone_source?: string;
   confidence_label?: string;
+  workflow?: CompactWorkflowDTO;
 }
 
 export interface TimelineEntry {
@@ -43,7 +81,7 @@ export interface TimelineEntry {
   to_recipients?: string[];
   cc_recipients?: string[];
   reply_to?: string;
-  graph_immutable_id?: string; // internal: never display, used for Original Submission match
+  graph_immutable_id?: string;
   conversation_id?: string;
   role?: string;
   event_type?: string;
@@ -133,6 +171,7 @@ export interface FullRecord {
   interview_suggestions?: LinkedInterviewSuggestion[];
   attachment_count: number;
   source_content_warning?: string;
+  workflow?: CompactWorkflowDTO;
 }
 
 export interface DashboardSummary {
@@ -152,6 +191,8 @@ export interface DashboardSummary {
   auth_status: string;
   records: RecordHeader[];
 }
+
+export type DashboardData = DashboardSummary;
 
 export type ViewName = 'dashboard' | 'records' | 'interviews' | 'retention';
 

@@ -11,11 +11,20 @@ def parse_graph_timestamp(ts_str: str) -> datetime:
         # Fallback to current UTC if completely unparseable
         return datetime.now(timezone.utc)
 
-def is_automatic_reply(sender: str, body_preview: str, msg: dict) -> bool:
+def is_automatic_reply(sender: Any, body_preview: Any, msg: dict) -> bool:
     """
     Conservatively detect automatic replies and delivery failures.
     Does not use content similarity, relies on deterministic patterns in headers/body.
     """
+    if isinstance(sender, dict):
+        sender = sender.get("address") or sender.get("emailAddress", {}).get("address") or ""
+    if not isinstance(sender, str):
+        sender = str(sender or "")
+    if isinstance(body_preview, dict):
+        body_preview = body_preview.get("content") or body_preview.get("bodyPreview") or ""
+    if not isinstance(body_preview, str):
+        body_preview = str(body_preview or "")
+
     sender = sender.lower()
     body = body_preview.lower()
     
@@ -24,13 +33,15 @@ def is_automatic_reply(sender: str, body_preview: str, msg: dict) -> bool:
         return True
     if "mailer-daemon" in sender or "postmaster" in sender:
         return True
+    if "microsoftexchange" in sender or "microsoft exchange" in sender:
+        return True
         
     # Check item class for bounce
     item_class = msg.get("itemClass", "").lower()
-    if "ipm.report" in item_class or "ndr" in item_class:
+    if "ipm.report" in item_class or "ndr" in item_class or "report." in item_class:
         return True
         
-    # Check deterministic body strings typical of auto-replies
+    # Check deterministic body strings typical of auto-replies and delivery failures
     auto_phrases = [
         "out of office",
         "automatic reply",
@@ -38,6 +49,15 @@ def is_automatic_reply(sender: str, body_preview: str, msg: dict) -> bool:
         "i am currently away",
         "delivery has failed",
         "undeliverable:",
+        "couldn't be delivered",
+        "could not be delivered",
+        "wasn't found at",
+        "was not found at",
+        "delivery failure",
+        "delivery status notification",
+        "returned to sender",
+        "message could not be sent",
+        "undelivered mail",
     ]
     if any(phrase in body for phrase in auto_phrases):
         return True

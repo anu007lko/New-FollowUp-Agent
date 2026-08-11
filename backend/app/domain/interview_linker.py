@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List
 
 
-_PREFIX = re.compile(r"^(?:(?:re|fw|fwd)\s*:\s*)+", re.IGNORECASE)
+_PREFIX = re.compile(r"^(?:(?:re|fw|fwd|tcs\s+submission|submission|submissions)\s*:\s*)+", re.IGNORECASE)
 _INTERVIEW_TERMS = ("interview", "invite", "schedule", "availability", "reschedule")
 
 
@@ -42,25 +42,49 @@ def link_exact_subject_interview_conversations(
             str(message.get("bodyPreview") or ""),
             str(((message.get("body") or {}).get("content") or "")),
         ]).casefold()
-        if not any(term in text for term in _INTERVIEW_TERMS):
-            continue
-        grouped.setdefault(conversation_id, []).append(message)
+        
+        role = "interview_coordination" if any(term in text for term in _INTERVIEW_TERMS) else "client_response"
+        grouped.setdefault(conversation_id, []).append((message, role))
 
     now = datetime.now(timezone.utc).isoformat()
-    return [
-        {
+    def process_group(conversation_id, group):
+        from backend.app.domain.message_facts import is_automatic_reply
+        raw_msgs = [m[0] for m in group]
+
+        # Must contain at least one valid external inbound client message
+        has_approved_external = False
+        for m in raw_msgs:
+            sender = (m.get("from", {}).get("emailAddress", {}).get("address") or "").strip().lower()
+            bp = m.get("bodyPreview", "")
+            if not sender or sender.endswith("@clifyx.com"):
+                continue
+            if is_automatic_reply(sender, bp, m):
+                continue
+            has_approved_external = True
+            break
+
+        if not has_approved_external:
+            return None
+
+        thread_role = "interview_coordination" if any(m[1] == "interview_coordination" for m in group) else "client_response"
+        return {
             "conversation_id": conversation_id,
-            "role": "interview_coordination",
-            "subject": messages[0].get("subject"),
+            "role": thread_role,
+            "subject": raw_msgs[0].get("subject"),
             "received_at": min(
-                (m.get("receivedDateTime") or m.get("sentDateTime") or now for m in messages)
+                (m.get("receivedDateTime") or m.get("sentDateTime") or now for m in raw_msgs)
             ),
             "linked_at": now,
             "linked_by": "automatic_exact_subject_rule",
             "thread_messages": sorted(
-                messages,
+                raw_msgs,
                 key=lambda m: m.get("sentDateTime") or m.get("receivedDateTime") or "",
             ),
         }
-        for conversation_id, messages in grouped.items()
-    ]
+
+    results = []
+    for cid, grp in grouped.items():
+        processed = process_group(cid, grp)
+        if processed:
+            results.append(processed)
+    return results

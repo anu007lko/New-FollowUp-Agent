@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import type { DashboardSummary, FullRecord } from '../types';
 
-const API = 'http://127.0.0.1:8000/api/v1';
+const API = '/api/v1';
 
 export interface MailboxReviewResult {
   status: 'completed' | 'already_running' | 'error' | string;

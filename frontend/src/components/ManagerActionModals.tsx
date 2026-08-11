@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FullRecord, LinkedInterviewSuggestion, LinkedConversation, DraftRecipientPreview, DraftApprovalResponse, DraftCreationResult, DraftOperationStatus } from '../types';
-import { formatTimestamp } from '../utils/displayStatus';
+import { formatTimestamp, getDisplayLabel } from '../utils/displayStatus';
 import { CustomDropdown } from './CustomDropdown';
 import { playSound } from '../utils/audio';
 
@@ -38,6 +38,10 @@ export function ManagerActionModals({
   const [closeNote, setCloseNote] = useState('');
   const [reopenReason, setReopenReason] = useState('');
 
+  // Status Action Confirmation State
+  const [actionReason, setActionReason] = useState('');
+  const [actionNote, setActionNote] = useState('');
+
   // Draft Wizard states
   const [draftWizardStep, setDraftWizardStep] = useState<'decision' | 'review' | 'recovery' | 'created'>('decision');
   const [draftPreview, setDraftPreview] = useState<DraftRecipientPreview | null>(null);
@@ -50,8 +54,13 @@ export function ManagerActionModals({
   const inFlight = useRef(false);
 
   useEffect(() => {
+    setCurrentVersion(record.record_version);
+  }, [record.record_version]);
+
+  useEffect(() => {
     setDraftWizardStep('decision'); setDraftPreview(null); setDraftApproval(null); setDraftStatus(null);
     setDraftContent(''); setDraftBccText(''); setErrorMessage(null); setCurrentVersion(record.record_version);
+    setActionReason(''); setActionNote('');
     if (activeModal) {
       fetch('/api/v1/session/csrf-token', { method: 'POST' })
         .then(r => r.ok ? r.json() : Promise.reject())
@@ -101,10 +110,24 @@ export function ManagerActionModals({
     record_version: currentVersion,
   };
 
-  const handleApiSubmit = async (endpoint: string, payloadData: any) => {
-    if (endpoint === 'outcome-decision') {
+  function mapCategoryToOutcomeOptionId(cat: string): string {
+    const c = (cat || '').trim().toLowerCase();
+    if (c.includes('position closed')) return 'POSITION_CLOSED';
+    if (c.includes('client rejected') || c.includes('rejection')) return 'CLIENT_REJECTED';
+    if (c.includes('withdrawn')) return 'CANDIDATE_WITHDRAWN';
+    if (c.includes('duplicate')) return 'DUPLICATE_SUBMISSION';
+    if (c.includes('placed') || c.includes('joined')) return 'PLACED_JOINED';
+    if (c.includes('unavailable') || c.includes('no longer')) return 'NO_LONGER_AVAILABLE';
+    if (c.includes('no follow')) return 'NO_FOLLOW_UP_NEEDED';
+    if (c.includes('hold')) return 'ON_HOLD';
+    if (c.includes('review') || c.includes('keep')) return 'KEEP_IN_REVIEW';
+    return 'OTHER_CLOSED';
+  }
+
+  const handleApiSubmit = async (endpoint: string, payloadData: any = {}) => {
+    if (endpoint === 'outcome-decision' || endpoint === 'review_outcome' || endpoint === 'set_outcome') {
       playSound('apply');
-    } else if (endpoint === 'close') {
+    } else if (endpoint === 'close' || endpoint.startsWith('action_')) {
       playSound('close');
     }
     setSubmitting(true);
@@ -120,13 +143,53 @@ export function ManagerActionModals({
         }
       }
 
-      const res = await fetch(`/api/v1/records/${record.id}/${endpoint}`, {
+      let actionEndpoint = `/api/v1/records/${record.id}/action`;
+      let actionPayload: any = null;
+
+      if (endpoint === 'close' || endpoint === 'action_closed' || endpoint === 'action_rejected' || endpoint === 'action_withdrawn' || endpoint === 'action_placed' || endpoint === 'action_unavailable') {
+        actionPayload = {
+          action_id: 'CLOSE_RECORD',
+          record_version: currentVersion,
+          reason: payloadData?.reason || closeReason,
+          note: payloadData?.close_note || closeNote || undefined
+        };
+      } else if (endpoint === 'action_duplicate') {
+        actionPayload = {
+          action_id: 'MARK_DUPLICATE_SUBMISSION',
+          record_version: currentVersion,
+          note: payloadData?.close_note || closeNote || undefined
+        };
+      } else if (endpoint === 'reopen') {
+        actionPayload = {
+          action_id: 'REOPEN_RECORD',
+          record_version: currentVersion,
+          note: payloadData?.reason || reopenReason || undefined
+        };
+      } else if (endpoint === 'note') {
+        actionPayload = {
+          action_id: 'ADD_NOTE',
+          record_version: currentVersion,
+          note: payloadData?.note_text || noteText
+        };
+      } else if (endpoint === 'outcome-decision' || endpoint === 'review_outcome' || endpoint === 'set_outcome') {
+        actionPayload = {
+          action_id: 'REVIEW_OUTCOME',
+          record_version: currentVersion,
+          outcome_option_id: payloadData?.outcome_option_id || mapCategoryToOutcomeOptionId(outcomeCategory),
+          note: outcomeNotes || undefined
+        };
+      } else {
+        actionEndpoint = `/api/v1/records/${record.id}/${endpoint}`;
+        actionPayload = { ...basePayload, ...payloadData };
+      }
+
+      const res = await fetch(actionEndpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'x-csrf-token': token,
         },
-        body: JSON.stringify({ ...basePayload, ...payloadData }),
+        body: JSON.stringify(actionPayload),
       });
 
       if (!res.ok) {
@@ -262,7 +325,8 @@ export function ManagerActionModals({
           if (['CREATING', 'FAILED_RECONCILABLE', 'RECOVERED_PENDING_FINALIZATION'].includes(status.state)) {
             setDraftStatus(status);
             setDraftWizardStep('recovery');
-            throw new Error('Draft creation was not retried. Review the recovery status below.');
+            setErrorMessage(null);
+            return;
           }
         }
         let errDetail = 'Draft creation failed';
@@ -293,10 +357,17 @@ export function ManagerActionModals({
     try {
       const res = await fetch(`/api/v1/records/${record.id}/draft-${action}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
-        body: JSON.stringify({ record_id: record.id, idempotency_key: draftApproval.idempotency_key, approval_hash: draftApproval.approval_hash }),
+        body: JSON.stringify({ record_id: record.id, idempotency_key: draftApproval.idempotency_key, approval_hash: draftApproval.approval_hash, record_version: currentVersion }),
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.detail || 'Recovery action failed');
+      if (!res.ok) {
+        if (res.status === 409 && onRefreshRecord) {
+          const refreshed = await onRefreshRecord();
+          if (refreshed) setCurrentVersion(refreshed.record_version);
+          throw new Error('This record changed elsewhere. The latest state has been loaded; please review and try again.');
+        }
+        throw new Error(data.detail || 'Recovery action failed');
+      }
       if (action === 'resume') {
         const created = data as DraftCreationResult;
         if (!created.verified || created.operation_state !== 'CREATED' || created.is_synthetic) throw new Error('Recovered draft was not verified.');
@@ -594,17 +665,32 @@ export function ManagerActionModals({
 
             <div className="modal-form-group">
               <label className="modal-label">Manager Action Choice:</label>
-              <CustomDropdown
-                options={[
-                  { value: 'Position Closed', label: 'Position Closed' },
-                  { value: 'Rejection', label: 'Rejection' },
-                  { value: 'Move to Needs Review', label: 'Move to Needs Review' },
-                  { value: 'Keep Open', label: 'Keep Open' },
-                ]}
-                value={outcomeCategory}
-                onChange={setOutcomeCategory}
-                ariaLabel="Manager Action Choice"
-              />
+              {(() => {
+                const reviewOutcomeAction = (record as any).workflow?.allowed_actions?.find((a: any) => a.action_id === 'REVIEW_OUTCOME');
+                const outcomeOpts = reviewOutcomeAction?.outcome_options;
+                const options = outcomeOpts && outcomeOpts.length > 0
+                  ? outcomeOpts.map((opt: any) => ({ value: opt.option_id, label: opt.label }))
+                  : [
+                      { value: 'POSITION_CLOSED', label: 'Position Closed' },
+                      { value: 'CLIENT_REJECTED', label: 'Client Rejected' },
+                      { value: 'CANDIDATE_WITHDRAWN', label: 'Candidate Withdrawn' },
+                      { value: 'DUPLICATE_SUBMISSION', label: 'Duplicate Submission' },
+                      { value: 'PLACED_JOINED', label: 'Placed / Joined' },
+                      { value: 'NO_LONGER_AVAILABLE', label: 'No Longer Available' },
+                      { value: 'NO_FOLLOW_UP_NEEDED', label: 'No Follow-up Needed' },
+                      { value: 'OTHER_CLOSED', label: 'Other (Close)' },
+                      { value: 'ON_HOLD', label: 'On Hold' },
+                      { value: 'KEEP_IN_REVIEW', label: 'Keep in Review' },
+                    ];
+                return (
+                  <CustomDropdown
+                    options={options}
+                    value={outcomeCategory}
+                    onChange={setOutcomeCategory}
+                    ariaLabel="Manager Action Choice"
+                  />
+                );
+              })()}
             </div>
 
             <textarea
@@ -686,18 +772,27 @@ export function ManagerActionModals({
 
             <div className="modal-form-group">
               <label className="modal-label">Close Reason:</label>
-              <CustomDropdown
-                options={[
-                  { value: 'Position closed', label: 'Position closed' },
-                  { value: 'Candidate withdrawn', label: 'Candidate withdrawn' },
-                  { value: 'Client rejected', label: 'Client rejected' },
-                  { value: 'No follow-up needed', label: 'No follow-up needed' },
-                  { value: 'Other', label: 'Other (Note required)' },
-                ]}
-                value={closeReason}
-                onChange={setCloseReason}
-                ariaLabel="Close Reason"
-              />
+              {(() => {
+                const closeAction = (record as any).workflow?.allowed_actions?.find((a: any) => a.action_id === 'CLOSE_RECORD');
+                const reasonOpts = closeAction?.reason_options;
+                const options = reasonOpts && reasonOpts.length > 0
+                  ? reasonOpts.map((r: any) => ({ value: r, label: r }))
+                  : [
+                      { value: 'Position closed', label: 'Position closed' },
+                      { value: 'Candidate withdrawn', label: 'Candidate withdrawn' },
+                      { value: 'Client rejected', label: 'Client rejected' },
+                      { value: 'No follow-up needed', label: 'No follow-up needed' },
+                      { value: 'Other', label: 'Other' },
+                    ];
+                return (
+                  <CustomDropdown
+                    options={options}
+                    value={closeReason}
+                    onChange={setCloseReason}
+                    ariaLabel="Close Reason"
+                  />
+                );
+              })()}
             </div>
 
             {closeReason === 'Other' && (
@@ -855,6 +950,148 @@ export function ManagerActionModals({
             </div>
           </div>
         )}
+
+        {/* Modal: Status Action Confirmation */}
+        {activeModal && activeModal.startsWith('action_') && (() => {
+          const actionMap: Record<string, { title: string; endpoint: string; outcomeCat?: string; isClose?: boolean; defaultReasons: string[] }> = {
+            action_closed: {
+              title: 'Mark Position Closed',
+              endpoint: 'outcome-decision',
+              outcomeCat: 'Position Closed',
+              defaultReasons: ['Client confirmed position is closed', 'Requirement filled by another vendor', 'Client cancelled requisition', 'Other']
+            },
+            action_rejected: {
+              title: 'Mark Candidate Rejected',
+              endpoint: 'outcome-decision',
+              outcomeCat: 'Client Rejected',
+              defaultReasons: ['Candidate profile not selected', 'Failed technical evaluation', 'Client declined to move forward', 'Other']
+            },
+            action_withdrawn: {
+              title: 'Mark Candidate Withdrawn',
+              endpoint: 'close',
+              isClose: true,
+              outcomeCat: 'Candidate withdrawn',
+              defaultReasons: ['Candidate accepted another offer', 'Candidate no longer interested', 'Salary/Rate mismatch', 'Other']
+            },
+            action_duplicate: {
+              title: 'Mark Duplicate Submission',
+              endpoint: 'close',
+              isClose: true,
+              outcomeCat: 'Duplicate submission',
+              defaultReasons: ['Candidate already submitted by another vendor', 'Duplicate submission entry', 'Other']
+            },
+            action_on_hold: {
+              title: 'Mark On Hold',
+              endpoint: 'close',
+              isClose: true,
+              outcomeCat: 'On hold',
+              defaultReasons: ['Client placed req on hold', 'Budget/headcount hold', 'Other']
+            },
+            action_placed: {
+              title: 'Mark Placed / Joined',
+              endpoint: 'close',
+              isClose: true,
+              outcomeCat: 'Placed / joined',
+              defaultReasons: ['Candidate selected and offer accepted', 'Candidate joined client project', 'Other']
+            },
+            action_unavailable: {
+              title: 'Mark No Longer Available',
+              endpoint: 'close',
+              isClose: true,
+              outcomeCat: 'No longer available',
+              defaultReasons: ['Candidate unavailable for start date', 'Location/travel mismatch', 'Other']
+            },
+            action_schedule: {
+              title: 'Schedule Next Follow-up',
+              endpoint: 'review-deferral',
+              defaultReasons: ['Follow up scheduled after client review', 'Waiting for candidate availability', 'Other']
+            }
+          };
+
+          const config = actionMap[activeModal] || {
+            title: 'Confirm Action',
+            endpoint: 'outcome-decision',
+            outcomeCat: 'Move to Needs Review',
+            defaultReasons: ['Manager request', 'Other']
+          };
+
+          const currentStatusLabel = getDisplayLabel(record.domain_status, record.thread_message_count, record.structured_evidence?.category);
+
+          return (
+            <div>
+              <h3 className="modal-title">{config.title}</h3>
+              <p className="modal-subtitle">Confirm status change for this submission. Audit trail will be recorded.</p>
+
+              {/* Confirmation Details Card */}
+              <div className="modal-evidence-box" style={{ backgroundColor: '#f8fafc', padding: '0.85rem 1rem', borderRadius: '6px', marginBottom: '1rem', border: '1px solid #e2e8f0', fontSize: '0.85rem' }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+                  <div><strong>Candidate:</strong> {record.candidate_name || '—'}</div>
+                  <div><strong>Job ID:</strong> {record.job_id || '—'}</div>
+                  <div><strong>Current Status:</strong> <span style={{ fontWeight: 600 }}>{currentStatusLabel}</span></div>
+                  <div><strong>New Action:</strong> <span style={{ fontWeight: 600, color: 'var(--accent, #0284c7)' }}>{config.title}</span></div>
+                </div>
+              </div>
+
+              {/* Reason Selector (Required) */}
+              <div className="modal-form-group">
+                <label className="modal-label" htmlFor="action-reason-input">Select Reason <span style={{ color: '#ef4444' }}>*</span>:</label>
+                <CustomDropdown
+                  options={config.defaultReasons.map(r => ({ value: r, label: r }))}
+                  value={actionReason}
+                  onChange={val => setActionReason(val)}
+                  ariaLabel="Select Action Reason"
+                />
+              </div>
+
+              {/* Optional Note */}
+              <div className="modal-form-group">
+                <label className="modal-label" htmlFor="action-note-input">Optional Note:</label>
+                <textarea
+                  id="action-note-input"
+                  className="modal-textarea"
+                  placeholder="Enter optional notes for audit trail..."
+                  value={actionNote}
+                  onChange={e => setActionNote(e.target.value)}
+                  rows={2}
+                />
+              </div>
+
+              <div className="modal-actions">
+                <button className="btn-secondary" onClick={onCloseModal} disabled={submitting}>Cancel</button>
+                <button
+                  className="btn-primary"
+                  disabled={submitting || !actionReason.trim()}
+                  onClick={() => {
+                    if (config.isClose) {
+                      handleApiSubmit('close', {
+                        reason: actionReason,
+                        close_note: actionNote ? actionNote : undefined
+                      });
+                    } else if (config.endpoint === 'review-deferral') {
+                      const nextDay = new Date(Date.now() + 86400000 * 2).toISOString();
+                      handleApiSubmit('review-deferral', {
+                        review_after: nextDay,
+                        reason: actionReason + (actionNote ? ` — ${actionNote}` : '')
+                      });
+                    } else {
+                      handleApiSubmit('outcome-decision', {
+                        outcome_category: config.outcomeCat || 'Position Closed',
+                        notes: actionReason + (actionNote ? ` — ${actionNote}` : '')
+                      });
+                    }
+                  }}
+                >
+                  {submitting ? 'Updating...' : 'Confirm Status Change'}
+                </button>
+              </div>
+              {errorMessage && (
+                <div role="alert" style={{ marginTop: '12px', color: '#ff6b6b', fontSize: '0.85rem', textAlign: 'center' }}>
+                  ⚠️ {errorMessage}
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

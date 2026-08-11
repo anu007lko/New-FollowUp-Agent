@@ -22,11 +22,18 @@ from backend.app.domain.models import (
     InterviewConfirmationRequest, InterviewScheduleRequest, ReviewDeferralRequest,
     OutcomeDecisionRequest, CloseRecordRequest,
     ReopenRecordRequest, LinkInterviewConversationRequest, UnlinkInterviewConversationRequest,
-    DraftOperationStatusResponse, DraftOperationActionRequest
+    DraftOperationStatusResponse, DraftOperationActionRequest,
+    RecordRefreshRequest,
+    ActionExecutionRequest, RecordDetailResponse, RecordListItem,
+    SubmissionRecordDTO, RecordWorkflowDTO, CompactWorkflowDTO,
+    WorkflowStatus, ActionID, CloseReason, OutcomeOptionID, AuditEventType
 )
+from backend.app.domain.workflow_policy_engine import WorkflowPolicyEngine
+from backend.app.domain.workflow_view_composer import WorkflowViewComposer, normalize_workflow_status
 from backend.app.domain.date_utils import TIMEZONE_NEW_YORK, TIMEZONE_UTC
 from backend.app.application.services import ConfigService, SecurityService
 from backend.app.application.import_service import ImportService
+from backend.app.domain.audit_trail import create_audit_event
 from backend.app.application.daily_review_engine import DailyReviewEngine, SingleRecordRefreshStatus
 from backend.app.application.workflow_engine import (
     validate_interview_transition, compute_domain_status_after_interview,
@@ -174,18 +181,18 @@ def run_daily_review():
 
 
 @router.post("/api/v1/records/{record_id}/refresh", response_model=SubmissionRecord, tags=["Daily Review"])
-def refresh_single_record_api(record_id: str):
+def refresh_single_record_api(record_id: str, request: RecordRefreshRequest):
     """
     Refresh exactly one existing record from Graph and update its timeline/status locally.
     Does not import new submissions or iterate other records.
     """
-    result = daily_review_engine.refresh_single_record(record_id)
+    result = daily_review_engine.refresh_single_record(record_id, request.record_version)
     if result.status == SingleRecordRefreshStatus.NOT_FOUND:
         raise HTTPException(status_code=404, detail="Record not found")
     elif result.status == SingleRecordRefreshStatus.REFRESH_DISABLED:
         raise HTTPException(status_code=503, detail="Graph refresh is disabled")
     elif result.status == SingleRecordRefreshStatus.CONFLICT:
-        raise HTTPException(status_code=409, detail="Optimistic update conflict during record refresh")
+        raise HTTPException(status_code=409, detail="Record version token is stale or mismatched.")
     elif result.status == SingleRecordRefreshStatus.SUCCESS and result.record:
         return result.record
     raise HTTPException(status_code=500, detail="Internal error during record refresh")
@@ -210,10 +217,11 @@ def get_daily_review_status():
     }
 
 
-@router.get("/api/v1/records", response_model=List[SubmissionRecordHeader], tags=["Records"])
+@router.get("/api/v1/records", tags=["Records"])
 def list_records():
-    """List operational submission records headers."""
-    return persistence.list_records()
+    """List operational submission records headers and workflow list items."""
+    all_records = _get_all_records()
+    return [WorkflowViewComposer.compose_list_item(r) for r in all_records]
 
 
 # --- M3 Dashboard & Record Endpoints ---
@@ -223,21 +231,158 @@ def get_dashboard():
     """
     Dashboard action queue summary.
     Returns counts per status bucket and record headers.
-    Uses synthetic test data when Graph auth is unavailable.
     """
     return _get_dashboard()
 
 
-@router.get("/api/v1/records/{record_id}", response_model=SubmissionRecord, tags=["Records"])
+@router.get("/api/v1/records/{record_id}", response_model=RecordDetailResponse, tags=["Records"])
 def get_record_by_id(record_id: str):
     """
-    Fetch a single record by ID. Fail-closed: returns 500 if database or decryption unavailable.
-    Never exposes raw graph_immutable_id or conversation_id in public payloads.
+    Fetch a single record by ID, wrapped in RecordDetailResponse DTO.
     """
     record = _get_record(record_id)
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
-    return record
+
+    has_draft = False
+    try:
+        has_draft = (persistence.get_latest_draft_operation(record_id) is not None)
+    except Exception:
+        has_draft = False
+
+    return WorkflowViewComposer.compose_detail(record, has_draft=has_draft)
+
+
+@router.post("/api/v1/records/{record_id}/action", response_model=RecordDetailResponse, tags=["Workflow Actions"])
+def execute_workflow_action(record_id: str, request: ActionExecutionRequest):
+    """
+    Unified endpoint for executing workflow mutation actions on a submission record.
+    Executes atomically with record version validation and audit logging.
+    """
+    snapshot = persistence.get_record_payload_snapshot(record_id)
+    if not snapshot:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    payload, stored_version, current_domain_status = snapshot
+    current_status = normalize_workflow_status(current_domain_status)
+
+    original_submitted_reason = getattr(request, "_original_submitted_reason", None)
+
+    # Validate action via WorkflowPolicyEngine
+    try:
+        new_status, close_reason, close_note = WorkflowPolicyEngine.validate_action(
+            action_id=request.action_id,
+            current_status=current_status,
+            request=request,
+            stored_version=stored_version
+        )
+    except ValueError as err:
+        err_msg = str(err)
+        if "CONFLICT" in err_msg:
+            raise HTTPException(status_code=409, detail=err_msg)
+        raise HTTPException(status_code=400, detail=err_msg)
+
+    # Atomic state mutation
+    now_iso = datetime.now(timezone.utc).isoformat()
+    new_version = stored_version + 1
+
+    payload["record_version"] = new_version
+    payload["domain_status"] = new_status.value
+
+    timeline = payload.get("timeline", [])
+
+    if request.action_id == ActionID.REOPEN_RECORD:
+        payload["close_reason"] = None
+        payload["close_note"] = None
+        payload["closed_at"] = None
+        payload["manager_outcome_category"] = None
+        payload["manual_terminal_lock"] = False
+        audit_note = request.note or "Record reopened by manager"
+        evt = create_audit_event(
+            record_id=record_id,
+            event_type=AuditEventType.USER_ACTION.value,
+            actor="tarun@clifyx.com",
+            prior_status=current_status.value,
+            resulting_status=WorkflowStatus.NEEDS_REVIEW.value,
+            record_version=new_version,
+            action_id=ActionID.REOPEN_RECORD.value,
+            note=audit_note,
+            body_preview=f"[Audit: USER_ACTION] Reopened record (from {current_status.value} to NeedsReview). {audit_note}"
+        )
+        timeline.append(evt)
+    elif request.action_id in (ActionID.CLOSE_RECORD, ActionID.MARK_DUPLICATE_SUBMISSION) or (request.action_id == ActionID.REVIEW_OUTCOME and new_status == WorkflowStatus.CLOSED):
+        reason_val = close_reason.value if close_reason else CloseReason.OTHER.value
+        payload["close_reason"] = reason_val
+        if close_note:
+            payload["close_note"] = close_note
+        payload["closed_at"] = now_iso
+        payload["manual_terminal_lock"] = True
+        audit_note = close_note or ""
+        evt = create_audit_event(
+            record_id=record_id,
+            event_type=AuditEventType.USER_ACTION.value,
+            actor="tarun@clifyx.com",
+            prior_status=current_status.value,
+            resulting_status=WorkflowStatus.CLOSED.value,
+            record_version=new_version,
+            action_id=request.action_id.value,
+            note=audit_note,
+            body_preview=f"[Audit: USER_ACTION] Closed record: {reason_val}. {audit_note}".strip(),
+            extra_fields={
+                "normalized_reason": reason_val,
+                "original_submitted_reason": original_submitted_reason or reason_val,
+            }
+        )
+        timeline.append(evt)
+    elif request.action_id == ActionID.ADD_NOTE:
+        note_text = request.note or ""
+        existing = payload.get("manager_notes", "")
+        payload["manager_notes"] = f"{existing}\n{note_text}".strip() if existing else note_text
+        evt = create_audit_event(
+            record_id=record_id,
+            event_type=AuditEventType.USER_ACTION.value,
+            actor="tarun@clifyx.com",
+            prior_status=current_status.value,
+            resulting_status=new_status.value,
+            record_version=new_version,
+            action_id=ActionID.ADD_NOTE.value,
+            note=note_text,
+            body_preview=f"[Manager Note]: {note_text}"
+        )
+        timeline.append(evt)
+    else:
+        # REVIEW_OUTCOME non-terminal transition (e.g. On Hold -> Tracking)
+        if close_note:
+            existing = payload.get("manager_notes", "")
+            payload["manager_notes"] = f"{existing}\n{close_note}".strip() if existing else close_note
+        evt = create_audit_event(
+            record_id=record_id,
+            event_type=AuditEventType.USER_ACTION.value,
+            actor="tarun@clifyx.com",
+            prior_status=current_status.value,
+            resulting_status=new_status.value,
+            record_version=new_version,
+            action_id=request.action_id.value,
+            note=close_note,
+            body_preview=f"[Audit: USER_ACTION] Executed {request.action_id.value} -> {new_status.value}"
+        )
+        timeline.append(evt)
+
+    payload["timeline"] = timeline
+
+    persistence.save_record_payload(record_id, payload, new_status.value)
+
+    updated_record = persistence.get_record_by_id(record_id)
+    if not updated_record:
+        raise HTTPException(status_code=500, detail="Failed to load updated record after action execution")
+
+    has_draft = False
+    try:
+        has_draft = (persistence.get_latest_draft_operation(record_id) is not None)
+    except Exception:
+        has_draft = False
+
+    return WorkflowViewComposer.compose_detail(updated_record, has_draft=has_draft)
 
 
 
@@ -793,6 +938,11 @@ def get_latest_draft_status(record_id: str):
 @router.post("/api/v1/records/{record_id}/draft-reconcile", response_model=DraftOperationStatusResponse, tags=["Draft Workflow"])
 def reconcile_draft(record_id: str, request: DraftOperationActionRequest):
     _require_live_draft_capability()
+    record = _get_record(record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+    if request.record_version != record.record_version:
+        raise HTTPException(status_code=409, detail="Record version token is stale or mismatched.")
     op = persistence.get_draft_operation(request.idempotency_key)
     if not op or op.record_id != record_id or request.record_id != record_id or op.approval_hash != request.approval_hash:
         raise HTTPException(status_code=400, detail="Draft operation binding is invalid")
@@ -825,6 +975,8 @@ def resume_draft(record_id: str, request: DraftOperationActionRequest):
     op = persistence.get_draft_operation(request.idempotency_key)
     if not record or not op or op.record_id != record_id or request.record_id != record_id or op.approval_hash != request.approval_hash:
         raise HTTPException(status_code=400, detail="Draft operation binding is invalid")
+    if request.record_version != record.record_version:
+        raise HTTPException(status_code=409, detail="Record version token is stale or mismatched.")
     if op.state != DraftOperationState.RECOVERED_PENDING_FINALIZATION or not op.payload_data.get("draft_id"):
         raise HTTPException(status_code=409, detail="Draft is not ready for explicit finalization")
     if op.record_version != record.record_version:
@@ -853,6 +1005,11 @@ def resume_draft(record_id: str, request: DraftOperationActionRequest):
 
 @router.post("/api/v1/records/{record_id}/draft-reset", response_model=DraftOperationStatusResponse, tags=["Draft Workflow"])
 def reset_draft(record_id: str, request: DraftOperationActionRequest):
+    record = _get_record(record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+    if request.record_version != record.record_version:
+        raise HTTPException(status_code=409, detail="Record version token is stale or mismatched.")
     op = persistence.get_draft_operation(request.idempotency_key)
     if not op or op.record_id != record_id or request.record_id != record_id or op.approval_hash != request.approval_hash:
         raise HTTPException(status_code=400, detail="Draft operation binding is invalid")
@@ -996,14 +1153,17 @@ def post_manager_note(record_id: str, req: ManagerNoteRequest, manager_identity:
         payload["manager_notes"] = f"{existing_notes or ''}{note_line}"
 
     timeline = payload.get("timeline", [])
-    timeline.append({
-        "entry_id": f"audit_note_{uuid.uuid4().hex[:8]}",
-        "event_type": "MANAGER_NOTE_ADDED",
-        "sender": manager_identity,
-        "timestamp": now_iso,
-        "is_system_note": True,
-        "body_preview": f"Manager note added: {req.note_text.strip()[:100]}"
-    })
+    evt = create_audit_event(
+        record_id=record_id,
+        event_type="MANAGER_NOTE_ADDED",
+        actor=manager_identity,
+        prior_status=rec.domain_status.value,
+        resulting_status=rec.domain_status.value,
+        record_version=req.record_version + 1,
+        note=req.note_text.strip(),
+        body_preview=f"Manager note added: {req.note_text.strip()[:100]}"
+    )
+    timeline.append(evt)
     payload["timeline"] = timeline
 
     try:
@@ -1020,14 +1180,17 @@ def post_followup_decision(record_id: str, req: FollowUpDecisionRequest, manager
     now_iso = datetime.now(TIMEZONE_UTC).isoformat()
 
     timeline = payload.get("timeline", [])
-    timeline.append({
-        "entry_id": f"audit_followup_{uuid.uuid4().hex[:8]}",
-        "event_type": "MANAGER_FOLLOWUP_DECISION",
-        "sender": manager_identity,
-        "timestamp": now_iso,
-        "is_system_note": True,
-        "body_preview": f"Manager recorded decision: {req.decision}"
-    })
+    evt = create_audit_event(
+        record_id=record_id,
+        event_type="MANAGER_FOLLOWUP_DECISION",
+        actor=manager_identity,
+        prior_status=rec.domain_status.value,
+        resulting_status=rec.domain_status.value,
+        record_version=req.record_version + 1,
+        note=req.decision,
+        body_preview=f"Manager recorded decision: {req.decision}"
+    )
+    timeline.append(evt)
     payload["timeline"] = timeline
 
     try:
@@ -1111,14 +1274,17 @@ def post_interview_confirmation(record_id: str, req: InterviewConfirmationReques
         audit_msg = "Interview marked not confirmed by manager. Submission remains open."
 
     timeline = payload.get("timeline", [])
-    timeline.append({
-        "entry_id": f"audit_int_{uuid.uuid4().hex[:8]}",
-        "event_type": "INTERVIEW_CONFIRMATION_DECISION",
-        "sender": manager_identity,
-        "timestamp": now_iso,
-        "is_system_note": True,
-        "body_preview": audit_msg
-    })
+    evt = create_audit_event(
+        record_id=record_id,
+        event_type="INTERVIEW_CONFIRMATION_DECISION",
+        actor=manager_identity,
+        prior_status=rec.domain_status.value,
+        resulting_status=target_status,
+        record_version=req.record_version + 1,
+        note=audit_msg,
+        body_preview=audit_msg
+    )
+    timeline.append(evt)
     payload["timeline"] = timeline
 
     try:
@@ -1147,11 +1313,18 @@ def post_interview_schedule(record_id: str, req: InterviewScheduleRequest, manag
     payload["interview_updated_at"] = now_iso
     payload["feedback_due_at"] = None
     payload["manager_outcome_category"] = "Interview Scheduled"
-    payload.setdefault("timeline", []).append({
-        "entry_id": f"audit_schedule_{uuid.uuid4().hex[:8]}", "event_type": "INTERVIEW_SCHEDULE_CONFIRMED",
-        "sender": manager_identity, "timestamp": now_iso, "is_system_note": True,
-        "body_preview": f"Manager confirmed interview schedule: {scheduled_at.isoformat()}."
-    })
+    timeline = payload.get("timeline", [])
+    evt = create_audit_event(
+        record_id=record_id,
+        event_type="INTERVIEW_SCHEDULE_CONFIRMED",
+        actor=manager_identity,
+        prior_status=rec.domain_status.value,
+        resulting_status=DomainStatus.INTERVIEW_REQUEST_SCHEDULED.value,
+        record_version=req.record_version + 1,
+        body_preview=f"Manager confirmed interview schedule: {scheduled_at.isoformat()}."
+    )
+    timeline.append(evt)
+    payload["timeline"] = timeline
     try:
         persistence.update_record_optimistically(record_id, payload, DomainStatus.INTERVIEW_REQUEST_SCHEDULED.value, req.record_version)
     except ValueError as e:
@@ -1174,11 +1347,19 @@ def post_review_deferral(record_id: str, req: ReviewDeferralRequest, manager_ide
     now_iso = datetime.now(TIMEZONE_UTC).isoformat()
     payload["feedback_due_at"] = review_after.astimezone(TIMEZONE_UTC).isoformat()
     payload["manager_review_deferral"] = {"review_after": payload["feedback_due_at"], "reason": req.reason, "set_at": now_iso}
-    payload.setdefault("timeline", []).append({
-        "entry_id": f"audit_deferral_{uuid.uuid4().hex[:8]}", "event_type": "MANAGER_REVIEW_DEFERRAL",
-        "sender": manager_identity, "timestamp": now_iso, "is_system_note": True,
-        "body_preview": f"Manager deferred follow-up review until {payload['feedback_due_at']}: {req.reason}"
-    })
+    timeline = payload.get("timeline", [])
+    evt = create_audit_event(
+        record_id=record_id,
+        event_type="MANAGER_REVIEW_DEFERRAL",
+        actor=manager_identity,
+        prior_status=rec.domain_status.value,
+        resulting_status=DomainStatus.IN_EVALUATION.value,
+        record_version=req.record_version + 1,
+        note=req.reason,
+        body_preview=f"Manager deferred follow-up review until {payload['feedback_due_at']}: {req.reason}"
+    )
+    timeline.append(evt)
+    payload["timeline"] = timeline
     try:
         persistence.update_record_optimistically(record_id, payload, DomainStatus.IN_EVALUATION.value, req.record_version)
     except ValueError as e:
@@ -1194,9 +1375,18 @@ def post_outcome_decision(record_id: str, req: OutcomeDecisionRequest, manager_i
 
     cat = req.outcome_category.strip()
     status_map = {
-        "Position Closed": DomainStatus.MANAGER_ACTION_REQUIRED.value,
-        "Rejection": DomainStatus.MANAGER_ACTION_REQUIRED.value,
-        "Client Rejected": DomainStatus.MANAGER_ACTION_REQUIRED.value,
+        "Position Closed": DomainStatus.CLOSED.value,
+        "Rejection": DomainStatus.CLOSED.value,
+        "Client Rejected": DomainStatus.CLOSED.value,
+        "Candidate Withdrawn": DomainStatus.CLOSED.value,
+        "Duplicate Submission": DomainStatus.CLOSED.value,
+        "Duplicate submission": DomainStatus.CLOSED.value,
+        "Duplicate submission entry": DomainStatus.CLOSED.value,
+        "Candidate already submitted by another vendor": DomainStatus.CLOSED.value,
+        "Duplicate / Already Submitted": DomainStatus.CLOSED.value,
+        "On Hold": DomainStatus.IN_EVALUATION.value,
+        "Placed / Joined": DomainStatus.CLOSED.value,
+        "No Longer Available": DomainStatus.CLOSED.value,
         "In Evaluation": DomainStatus.IN_EVALUATION.value,
         "Interview Request": DomainStatus.NEEDS_REVIEW.value,
         "Interview Scheduled": DomainStatus.INTERVIEW_AWAITING_CONFIRMATION.value,
@@ -1207,11 +1397,20 @@ def post_outcome_decision(record_id: str, req: OutcomeDecisionRequest, manager_i
         "Keep Open": DomainStatus.NEEDS_REVIEW.value,
         "Move to Needs Review": DomainStatus.NEEDS_REVIEW.value,
     }
+    prev_status = payload.get("domain_status", rec.domain_status.value)
+    job_id = payload.get("job_id", rec.job_id or "N/A")
     target_status = status_map.get(cat, DomainStatus.MANAGER_ACTION_REQUIRED.value)
     payload["manager_outcome_category"] = cat
-    payload.pop("closed_at", None)
-    payload.pop("close_reason", None)
-    payload.pop("close_note", None)
+
+    if target_status == DomainStatus.CLOSED.value:
+        payload["closed_at"] = now_iso
+        payload["close_reason"] = cat
+        if req.notes:
+            payload["close_note"] = req.notes.strip()
+    else:
+        payload.pop("closed_at", None)
+        payload.pop("close_reason", None)
+        payload.pop("close_note", None)
 
     timeline = payload.get("timeline", [])
     evaluation_due_at = None
@@ -1234,14 +1433,18 @@ def post_outcome_decision(record_id: str, req: OutcomeDecisionRequest, manager_i
                 break
             except (KeyError, TypeError, ValueError):
                 continue
-    timeline.append({
-        "entry_id": f"audit_outcome_{uuid.uuid4().hex[:8]}",
-        "event_type": "MANAGER_OUTCOME_DECISION",
-        "sender": manager_identity,
-        "timestamp": now_iso,
-        "is_system_note": True,
-        "body_preview": f"Manager set outcome decision: {cat}" + (f" | evaluation due at {evaluation_due_at}" if evaluation_due_at else "")
-    })
+    timeline = payload.get("timeline", [])
+    evt = create_audit_event(
+        record_id=record_id,
+        event_type="MANAGER_OUTCOME_DECISION",
+        actor=manager_identity,
+        prior_status=prev_status,
+        resulting_status=target_status,
+        record_version=req.record_version + 1,
+        note=req.notes,
+        body_preview=f"[AUDIT] Status changed from {prev_status} to {target_status}. Reason: {cat}. Note: {req.notes or 'None'} (Job ID: {job_id})"
+    )
+    timeline.append(evt)
     payload["timeline"] = timeline
 
     if req.notes:
@@ -1264,7 +1467,12 @@ def post_outcome_decision(record_id: str, req: OutcomeDecisionRequest, manager_i
 @router.post("/api/v1/records/{record_id}/close", response_model=SubmissionRecord, tags=["Manager Actions"])
 def post_close_record(record_id: str, req: CloseRecordRequest, manager_identity: str = Depends(get_trusted_manager_identity)):
     """Close record with required reason and optional/required note."""
-    valid_reasons = {"Position closed", "Candidate withdrawn", "Client rejected", "No follow-up needed", "Other"}
+    valid_reasons = {
+        "Position closed", "Candidate withdrawn", "Client rejected", 
+        "Duplicate submission", "Duplicate submission entry", "Duplicate Submission",
+        "Candidate already submitted by another vendor", "On hold", "Placed / joined", 
+        "No longer available", "No follow-up needed", "Other"
+    }
     if req.reason not in valid_reasons:
         raise HTTPException(status_code=400, detail=f"Invalid close reason '{req.reason}'. Must be one of {valid_reasons}")
 
@@ -1278,15 +1486,20 @@ def post_close_record(record_id: str, req: CloseRecordRequest, manager_identity:
     payload["close_note"] = req.close_note.strip() if req.close_note else None
     payload["closed_at"] = now_iso
 
+    prev_status = payload.get("domain_status", rec.domain_status.value)
+    job_id = payload.get("job_id", rec.job_id or "N/A")
     timeline = payload.get("timeline", [])
-    timeline.append({
-        "entry_id": f"audit_close_{uuid.uuid4().hex[:8]}",
-        "event_type": "MANAGER_RECORD_CLOSED",
-        "sender": manager_identity,
-        "timestamp": now_iso,
-        "is_system_note": True,
-        "body_preview": f"Record closed by manager. Reason: {req.reason}"
-    })
+    evt = create_audit_event(
+        record_id=record_id,
+        event_type="MANAGER_RECORD_CLOSED",
+        actor=manager_identity,
+        prior_status=prev_status,
+        resulting_status=DomainStatus.CLOSED.value,
+        record_version=req.record_version + 1,
+        note=req.close_note,
+        body_preview=f"[AUDIT] Status changed from {prev_status} to Closed ({req.reason}). Note: {req.close_note or 'None'} (Record ID: {record_id}, Job ID: {job_id})"
+    )
+    timeline.append(evt)
     payload["timeline"] = timeline
 
     try:
@@ -1307,14 +1520,17 @@ def post_reopen_record(record_id: str, req: ReopenRecordRequest, manager_identit
     payload["closed_at"] = None
 
     timeline = payload.get("timeline", [])
-    timeline.append({
-        "entry_id": f"audit_reopen_{uuid.uuid4().hex[:8]}",
-        "event_type": "MANAGER_RECORD_REOPENED",
-        "sender": manager_identity,
-        "timestamp": now_iso,
-        "is_system_note": True,
-        "body_preview": f"Record reopened by manager. Reason: {req.reason or 'Manager request'}"
-    })
+    evt = create_audit_event(
+        record_id=record_id,
+        event_type="MANAGER_RECORD_REOPENED",
+        actor=manager_identity,
+        prior_status=rec.domain_status.value,
+        resulting_status=DomainStatus.NEEDS_REVIEW.value,
+        record_version=req.record_version + 1,
+        note=req.reason,
+        body_preview=f"Record reopened by manager. Reason: {req.reason or 'Manager request'}"
+    )
+    timeline.append(evt)
     payload["timeline"] = timeline
 
     try:
@@ -1370,27 +1586,14 @@ def post_link_interview(record_id: str, req: LinkInterviewConversationRequest, m
     linked_convs.append(new_linked)
     payload["linked_conversations"] = linked_convs
 
-    timeline = payload.get("timeline", [])
-    timeline.append({
-        "entry_id": f"audit_link_{uuid.uuid4().hex[:8]}",
-        "event_type": "MANAGER_LINKED_INTERVIEW_CONVERSATION",
-        "sender": manager_identity,
-        "timestamp": now_iso,
-        "is_system_note": True,
-        "body_preview": "Manager confirmed linking interview coordination conversation."
-    })
-    payload["timeline"] = timeline
-
     # Reclassify to determine updated domain status
     new_domain_status = rec.domain_status
     try:
-        from backend.app.domain.consolidated_classifier import classify_record, PROPOSED_TO_DOMAIN_STATUS
-        res = classify_record(
-            rec.graph_immutable_id,
-            payload.get("thread_messages", []),
-            datetime.now(TIMEZONE_UTC),
-            timeline=payload.get("timeline", []),
-            linked_conversations=payload.get("linked_conversations", [])
+        from backend.app.domain.consolidated_classifier import refresh_classification_snapshot, PROPOSED_TO_DOMAIN_STATUS
+        res = refresh_classification_snapshot(
+            payload,
+            graph_immutable_id=rec.graph_immutable_id,
+            evaluation_time=datetime.now(TIMEZONE_UTC)
         )
         if res.proposed_status in PROPOSED_TO_DOMAIN_STATUS:
             new_domain_status = PROPOSED_TO_DOMAIN_STATUS[res.proposed_status]
@@ -1398,6 +1601,19 @@ def post_link_interview(record_id: str, req: LinkInterviewConversationRequest, m
             new_domain_status = DomainStatus(res.proposed_status)
     except Exception as e:
         logger.error(f"Failed to reclassify record during link: {e}")
+
+    timeline = payload.get("timeline", [])
+    evt = create_audit_event(
+        record_id=record_id,
+        event_type="MANAGER_LINKED_INTERVIEW_CONVERSATION",
+        actor=manager_identity,
+        prior_status=rec.domain_status.value,
+        resulting_status=new_domain_status.value,
+        record_version=req.record_version + 1,
+        body_preview="Manager confirmed linking interview coordination conversation."
+    )
+    timeline.append(evt)
+    payload["timeline"] = timeline
 
     try:
         persistence.update_record_optimistically(record_id, payload, new_domain_status.value, req.record_version)
@@ -1427,27 +1643,14 @@ def post_unlink_interview(record_id: str, req: UnlinkInterviewConversationReques
 
     payload["linked_conversations"] = updated_linked
 
-    timeline = payload.get("timeline", [])
-    timeline.append({
-        "entry_id": f"audit_unlink_{uuid.uuid4().hex[:8]}",
-        "event_type": "MANAGER_UNLINKED_INTERVIEW_CONVERSATION",
-        "sender": manager_identity,
-        "timestamp": now_iso,
-        "is_system_note": True,
-        "body_preview": "Manager unlinked interview conversation."
-    })
-    payload["timeline"] = timeline
-
     # Reclassify to determine updated domain status
     new_domain_status = rec.domain_status
     try:
-        from backend.app.domain.consolidated_classifier import classify_record, PROPOSED_TO_DOMAIN_STATUS
-        res = classify_record(
-            rec.graph_immutable_id,
-            payload.get("thread_messages", []),
-            datetime.now(TIMEZONE_UTC),
-            timeline=payload.get("timeline", []),
-            linked_conversations=payload.get("linked_conversations", [])
+        from backend.app.domain.consolidated_classifier import refresh_classification_snapshot, PROPOSED_TO_DOMAIN_STATUS
+        res = refresh_classification_snapshot(
+            payload,
+            graph_immutable_id=rec.graph_immutable_id,
+            evaluation_time=datetime.now(TIMEZONE_UTC)
         )
         if res.proposed_status in PROPOSED_TO_DOMAIN_STATUS:
             new_domain_status = PROPOSED_TO_DOMAIN_STATUS[res.proposed_status]
@@ -1456,8 +1659,23 @@ def post_unlink_interview(record_id: str, req: UnlinkInterviewConversationReques
     except Exception as e:
         logger.error(f"Failed to reclassify record during unlink: {e}")
 
+    timeline = payload.get("timeline", [])
+    evt = create_audit_event(
+        record_id=record_id,
+        event_type="MANAGER_UNLINKED_INTERVIEW_CONVERSATION",
+        actor=manager_identity,
+        prior_status=rec.domain_status.value,
+        resulting_status=new_domain_status.value,
+        record_version=req.record_version + 1,
+        body_preview="Manager unlinked interview conversation."
+    )
+    timeline.append(evt)
+    payload["timeline"] = timeline
+
     try:
         persistence.update_record_optimistically(record_id, payload, new_domain_status.value, req.record_version)
     except ValueError as e:
         raise HTTPException(status_code=409, detail=str(e))
     return _get_record(record_id)
+    if request.record_version != record.record_version:
+        raise HTTPException(status_code=409, detail="Record version token is stale or mismatched.")

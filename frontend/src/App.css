@@ -1414,6 +1414,19 @@ button {
 /* Why this status — disclosure card */
 .panel-evidence-card {
   margin-top: var(--sp-3);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-subtle);
+  background: rgba(15, 23, 42, 0.5);
+  overflow: hidden;
+  transition: border-color var(--duration-fast);
+}
+
+.panel-evidence-card-action {
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+.panel-evidence-card-status {
+  border-color: rgba(148, 163, 184, 0.3);
 }
 
 .panel-evidence-toggle {
@@ -1421,27 +1434,83 @@ button {
   border: none;
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--sp-2);
-  padding: var(--sp-2) 0;
+  padding: var(--sp-3) var(--sp-4);
   font-size: 0.8125rem;
   color: var(--text-secondary);
   font-weight: 500;
   min-height: 36px;
-  transition: color var(--duration-fast);
+  transition: color var(--duration-fast), background var(--duration-fast);
   width: 100%;
   text-align: left;
 }
 
 .panel-evidence-toggle:hover {
   color: var(--accent);
+  background: rgba(56, 189, 248, 0.06);
+}
+
+.panel-evidence-toggle-label {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  min-width: 0;
+}
+
+.panel-evidence-icon {
+  flex-shrink: 0;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.panel-evidence-icon-action {
+  background: rgba(56, 189, 248, 0.15);
+  color: var(--accent);
+  border: 1px solid rgba(56, 189, 248, 0.35);
+}
+
+.panel-evidence-icon-status {
+  background: rgba(148, 163, 184, 0.12);
+  color: var(--text-secondary);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+}
+
+.panel-evidence-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.panel-evidence-title {
+  font-weight: 600;
+  font-size: 0.825rem;
+  color: var(--text-primary);
+  letter-spacing: 0.01em;
+}
+
+.panel-evidence-card-action .panel-evidence-title {
+  color: var(--accent);
+}
+
+.panel-evidence-reason {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-weight: 400;
 }
 
 .panel-evidence-content {
   padding: var(--sp-3) var(--sp-4);
   background: var(--bg-surface);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-sm);
-  margin-top: var(--sp-2);
+  border-top: 1px solid var(--border-subtle);
   font-size: 0.8125rem;
   animation: collapseOpen var(--duration-fast) var(--ease-out);
 }
@@ -3430,6 +3499,26 @@ button {
   color: #c3c7cd;
   font-family: Georgia, 'Times New Roman', serif;
   font-size: 0.86rem;
+}
+
+.figma-why-card-action {
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+.figma-why-card-action .figma-why-icon {
+  border-color: #38bdf8;
+  color: #38bdf8;
+  background: rgba(56, 189, 248, 0.1);
+}
+
+.figma-why-card-action strong {
+  color: #7dd3fc;
+}
+
+.figma-why-card-status .figma-why-icon {
+  border-color: #65c8c5;
+  color: #75dad2;
+  background: rgba(101, 200, 197, 0.08);
 }
 
 .figma-review-action {

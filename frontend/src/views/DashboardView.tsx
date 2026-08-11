@@ -3,11 +3,13 @@ import type { DashboardSummary, ViewName, RecordHeader } from '../types';
 import { getGreeting, formatRelativeDate } from '../utils/displayStatus';
 import { formatExactET } from '../utils/deadlineUtils';
 import { getSkippedRecordIds, skipRecord, clearSkippedRecords } from '../utils/skipManager';
+import { OverflowMenu } from '../components/OverflowMenu';
 import { playSound } from '../utils/audio';
 
 interface DashboardViewProps {
   dashboard: DashboardSummary;
   onRecordClick: (id: string) => void;
+  onActionModal?: (recordId: string, actionType: string, recordVersion?: number) => void;
   onNavigate: (view: ViewName) => void;
 }
 
@@ -25,34 +27,60 @@ function focusLanguage(status: string) {
     action: 'needs a follow-up.',
     evidence: 'No meaningful client response was found after the approved follow-up window.',
     reason: 'Follow-up timer reached · Review before drafting.',
+    statusLabel: 'Action Required: Follow Up',
+    statusType: 'action' as const,
   };
   if (status === 'InterviewAwaitingConfirmation') return {
     eyebrow: 'INTERVIEW ACTIVITY',
     action: 'needs confirmation.',
     evidence: 'Interview activity was detected and needs a manager-confirmed next step.',
     reason: 'Interview event detected · Confirm the latest outcome.',
+    statusLabel: 'Action Required: Confirm Interview',
+    statusType: 'action' as const,
   };
-  if (status === 'InterviewRequestScheduled') return {
+  if (status === 'InterviewRequestScheduled' || status === 'InterviewScheduled') return {
     eyebrow: 'INTERVIEW SCHEDULED',
     action: 'has an upcoming interview.',
     evidence: 'A future interview date was detected in the conversation.',
     reason: 'Invite found · Monitor the interview workflow.',
+    statusLabel: 'Current Status: Interview Scheduled',
+    statusType: 'status' as const,
   };
   if (status === 'NeedsReview') return {
     eyebrow: 'NEEDS REVIEW',
     action: 'needs your decision.',
     evidence: 'The latest client response could not be resolved safely by deterministic rules.',
     reason: 'Uncertain response · Manager review required.',
+    statusLabel: 'Action Required: Set Outcome',
+    statusType: 'action' as const,
+  };
+  if (status === 'FeedbackDue' || status === 'AwaitingFeedback') return {
+    eyebrow: 'FEEDBACK DUE',
+    action: 'needs feedback recorded.',
+    evidence: 'Feedback on a requirement is due and needs a manager update.',
+    reason: 'Feedback window reached · Record the outcome.',
+    statusLabel: 'Action Required: Record Feedback',
+    statusType: 'action' as const,
+  };
+  if (status === 'ManagerActionRequired') return {
+    eyebrow: 'CLIENT RESPONSE',
+    action: 'needs a decision.',
+    evidence: 'A meaningful client response was detected in the latest conversation.',
+    reason: 'Client response detected · Review before closing.',
+    statusLabel: 'Action Required: Manager Review',
+    statusType: 'action' as const,
   };
   return {
     eyebrow: 'CLIENT RESPONSE',
     action: 'needs a decision.',
     evidence: 'A meaningful client response was detected in the latest conversation.',
     reason: 'Client response detected · Review before closing.',
+    statusLabel: 'Current Status: Awaiting Response',
+    statusType: 'status' as const,
   };
 }
 
-export function DashboardView({ dashboard, onRecordClick, onNavigate }: DashboardViewProps) {
+export function DashboardView({ dashboard, onRecordClick, onActionModal, onNavigate }: DashboardViewProps) {
   const [skippedSet, setSkippedSet] = useState<Set<string>>(() => getSkippedRecordIds());
   const [skipNotice, setSkipNotice] = useState<string | null>(null);
 
@@ -172,12 +200,12 @@ export function DashboardView({ dashboard, onRecordClick, onNavigate }: Dashboar
               <span>{formatRelativeDate(focusUpdated)}</span>
             </div>
 
-            <button className="figma-why-card" onClick={() => { playSound('click'); onRecordClick(focusRecord.id); }}>
-              <span className="figma-why-icon">?</span>
-              <span><strong>Why this status?</strong><small>{focus.reason}</small></span>
+            <button className={`figma-why-card ${focus.statusType === 'action' ? 'figma-why-card-action' : 'figma-why-card-status'}`} onClick={() => { playSound('click'); onRecordClick(focusRecord.id); }}>
+              <span className="figma-why-icon">{focus.statusType === 'action' ? '⚡' : 'ℹ'}</span>
+              <span><strong>{focus.statusLabel}</strong><small>{focus.reason}</small></span>
             </button>
 
-            <div className="figma-focus-actions">
+            <div className="figma-focus-actions" style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
               <button className="figma-review-action" onClick={() => { playSound('click'); onRecordClick(focusRecord.id); }}>
                 <span className="figma-eye" aria-hidden="true">◉</span>
                 <span>Review conversation</span>
@@ -191,6 +219,25 @@ export function DashboardView({ dashboard, onRecordClick, onNavigate }: Dashboar
               >
                 <span>Skip for later</span>
               </button>
+              {(() => {
+                const allowed = (focusRecord as any).workflow?.allowed_actions || [];
+                const focusItems = allowed.length > 0 ? allowed.map((a: any) => ({
+                  label: a.label,
+                  danger: a.style === 'danger',
+                  onClick: () => {
+                    playSound('click');
+                    if (a.execution_kind === 'navigation' && a.action_id === 'VIEW_CONVERSATION') {
+                      onRecordClick(focusRecord.id);
+                    } else if (onActionModal) {
+                      onActionModal(focusRecord.id, a.action_id, focusRecord.record_version);
+                    } else {
+                      onRecordClick(focusRecord.id);
+                    }
+                  }
+                })) : [{ label: 'No actions available', disabled: true, onClick: () => {} }];
+
+                return <OverflowMenu items={focusItems} />;
+              })()}
             </div>
             {skipNotice && (
               <div className="figma-skip-notice" role="status">

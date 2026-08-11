@@ -18,14 +18,16 @@ def test_parse_graph_timestamp():
     dt_invalid = parse_graph_timestamp("Invalid date")
     assert dt_invalid is not None
 
-def test_is_automatic_reply():
     # By sender
     assert is_automatic_reply("noreply@example.com", "Hello", {}) == True
     assert is_automatic_reply("postmaster@domain.com", "Hello", {}) == True
+    assert is_automatic_reply("MicrosoftExchange329e71ec88ae4615bbc36ab6ce41109e", "Delivery failed", {}) == True
     
     # By body
     assert is_automatic_reply("person@example.com", "Out of office until next week", {}) == True
     assert is_automatic_reply("person@example.com", "This is an automatic reply", {}) == True
+    assert is_automatic_reply("person@example.com", "Your message to anjaneyareddy.rmkrishnareddy@aexp.com couldn't be delivered.", {}) == True
+    assert is_automatic_reply("person@example.com", "anjaneyareddy.rmkrishnareddy wasn't found at aexp.com.", {}) == True
     
     # By item class (NDR)
     assert is_automatic_reply("person@example.com", "Hello", {"itemClass": "IPM.Note.NDR"}) == True

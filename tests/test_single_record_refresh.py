@@ -38,9 +38,9 @@ def test_refresh_single_record_endpoint_csrf_authorized(monkeypatch):
             status=SingleRecordRefreshStatus.NOT_FOUND,
             error_message="Record not found"
         )
-        response = client.post("/api/v1/records/rec-001/refresh", headers=headers)
+        response = client.post("/api/v1/records/rec-001/refresh", headers=headers, json={"record_version": 1})
         assert response.status_code == 404
-        mock_refresh.assert_called_once_with("rec-001")
+        mock_refresh.assert_called_once_with("rec-001", 1)
 
 
 def test_refresh_single_record_endpoint_status_code_mapping(monkeypatch):
@@ -60,7 +60,7 @@ def test_refresh_single_record_endpoint_status_code_mapping(monkeypatch):
             status=SingleRecordRefreshStatus.REFRESH_DISABLED,
             error_message="Disabled"
         )
-        resp = client.post("/api/v1/records/rec-001/refresh", headers=headers)
+        resp = client.post("/api/v1/records/rec-001/refresh", headers=headers, json={"record_version": 1})
         assert resp.status_code == 503
         assert "disabled" in resp.json()["detail"].lower()
 
@@ -70,9 +70,9 @@ def test_refresh_single_record_endpoint_status_code_mapping(monkeypatch):
             status=SingleRecordRefreshStatus.CONFLICT,
             error_message="Conflict"
         )
-        resp = client.post("/api/v1/records/rec-001/refresh", headers=headers)
+        resp = client.post("/api/v1/records/rec-001/refresh", headers=headers, json={"record_version": 1})
         assert resp.status_code == 409
-        assert "conflict" in resp.json()["detail"].lower()
+        assert "version" in resp.json()["detail"].lower()
 
     # 404 - NOT_FOUND
     with patch.object(daily_review_engine, "refresh_single_record") as mock_refresh:
@@ -80,7 +80,7 @@ def test_refresh_single_record_endpoint_status_code_mapping(monkeypatch):
             status=SingleRecordRefreshStatus.NOT_FOUND,
             error_message="Not found"
         )
-        resp = client.post("/api/v1/records/rec-001/refresh", headers=headers)
+        resp = client.post("/api/v1/records/rec-001/refresh", headers=headers, json={"record_version": 1})
         assert resp.status_code == 404
 
     # 200 - SUCCESS
@@ -100,7 +100,7 @@ def test_refresh_single_record_endpoint_status_code_mapping(monkeypatch):
             status=SingleRecordRefreshStatus.SUCCESS,
             record=dummy_rec
         )
-        resp = client.post("/api/v1/records/rec-001/refresh", headers=headers)
+        resp = client.post("/api/v1/records/rec-001/refresh", headers=headers, json={"record_version": 1})
         assert resp.status_code == 200
         assert resp.json()["id"] == "rec-001"
 
