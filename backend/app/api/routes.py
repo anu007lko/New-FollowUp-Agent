@@ -1136,7 +1136,7 @@ def _validate_and_get_record_payload(record_id: str, req: BaseManagerActionReque
     return rec, payload
 
 
-@router.post("/api/v1/records/{record_id}/notes", response_model=SubmissionRecord, tags=["Manager Actions"])
+@router.post("/api/v1/records/{record_id}/notes", response_model=SubmissionRecord, tags=["Manager Actions"], deprecated=True)
 def post_manager_note(record_id: str, req: ManagerNoteRequest, manager_identity: str = Depends(get_trusted_manager_identity)):
     """Add a local manager note. Notes never reset timers or overwrite message history."""
     if not req.note_text.strip():
@@ -1294,7 +1294,7 @@ def post_interview_confirmation(record_id: str, req: InterviewConfirmationReques
     return _get_record(record_id)
 
 
-@router.post("/api/v1/records/{record_id}/interview-schedule", response_model=SubmissionRecord, tags=["Manager Actions"])
+@router.post("/api/v1/records/{record_id}/interview-schedule", response_model=SubmissionRecord, tags=["Manager Actions"], deprecated=True)
 def post_interview_schedule(record_id: str, req: InterviewScheduleRequest, manager_identity: str = Depends(get_trusted_manager_identity)):
     """Persist a manager-confirmed future interview date without starting a feedback timer."""
     rec, payload = _validate_and_get_record_payload(record_id, req)
@@ -1367,7 +1367,7 @@ def post_review_deferral(record_id: str, req: ReviewDeferralRequest, manager_ide
     return _get_record(record_id)
 
 
-@router.post("/api/v1/records/{record_id}/outcome-decision", response_model=SubmissionRecord, tags=["Manager Actions"])
+@router.post("/api/v1/records/{record_id}/outcome-decision", response_model=SubmissionRecord, tags=["Manager Actions"], deprecated=True)
 def post_outcome_decision(record_id: str, req: OutcomeDecisionRequest, manager_identity: str = Depends(get_trusted_manager_identity)):
     """Set manager outcome decision."""
     rec, payload = _validate_and_get_record_payload(record_id, req)
@@ -1464,7 +1464,7 @@ def post_outcome_decision(record_id: str, req: OutcomeDecisionRequest, manager_i
     return _get_record(record_id)
 
 
-@router.post("/api/v1/records/{record_id}/close", response_model=SubmissionRecord, tags=["Manager Actions"])
+@router.post("/api/v1/records/{record_id}/close", response_model=SubmissionRecord, tags=["Manager Actions"], deprecated=True)
 def post_close_record(record_id: str, req: CloseRecordRequest, manager_identity: str = Depends(get_trusted_manager_identity)):
     """Close record with required reason and optional/required note."""
     valid_reasons = {
@@ -1509,7 +1509,7 @@ def post_close_record(record_id: str, req: CloseRecordRequest, manager_identity:
     return _get_record(record_id)
 
 
-@router.post("/api/v1/records/{record_id}/reopen", response_model=SubmissionRecord, tags=["Manager Actions"])
+@router.post("/api/v1/records/{record_id}/reopen", response_model=SubmissionRecord, tags=["Manager Actions"], deprecated=True)
 def post_reopen_record(record_id: str, req: ReopenRecordRequest, manager_identity: str = Depends(get_trusted_manager_identity)):
     """Reopen a closed record."""
     rec, payload = _validate_and_get_record_payload(record_id, req)
