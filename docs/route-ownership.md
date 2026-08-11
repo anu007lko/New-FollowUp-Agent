@@ -35,4 +35,6 @@ No route is removed by this document.
 
 The direct legacy record routes remain available for compatibility and must retain
 their existing validation and optimistic concurrency behavior until a later removal
-phase explicitly authorizes their deletion.
+phase explicitly authorizes their deletion. Successful calls emit `Deprecation: true`,
+`X-Deprecated-Route`, and `X-Deprecated-Replacement` response headers and a warning log
+so remaining runtime callers can be identified before removal.

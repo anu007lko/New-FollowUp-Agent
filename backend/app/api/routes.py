@@ -8,7 +8,7 @@ from typing import List, Optional, Dict
 from datetime import datetime, timezone, timedelta
 import uuid
 import hashlib
-from fastapi import APIRouter, Query, HTTPException
+from fastapi import APIRouter, Query, HTTPException, Response
 from backend.app.domain.models import (
     HealthStatus, ConfigStatus, ImportReport, SubmissionRecordHeader,
     DashboardSummary, SubmissionRecord, CloseAction, InterviewStateUpdate,
@@ -84,6 +84,19 @@ def _require_live_draft_capability() -> None:
         raise HTTPException(status_code=503, detail="Draft capability failed closed because email sending is enabled")
     if os.environ.get("GRAPH_ENABLED", "False").lower() != "true" or os.environ.get("DRAFTS_ENABLED", "False").lower() != "true":
         raise HTTPException(status_code=503, detail="Microsoft Graph draft capability is disabled")
+
+
+def _mark_legacy_route_use(response: Optional[Response], route_name: str, replacement: str) -> None:
+    """Expose and log compatibility-route use without changing response bodies."""
+    if response is not None:
+        response.headers["Deprecation"] = "true"
+        response.headers["X-Deprecated-Route"] = route_name
+        response.headers["X-Deprecated-Replacement"] = replacement
+    _routes_logger.warning(
+        "Deprecated mutation route used: %s; replacement=%s",
+        route_name,
+        replacement,
+    )
 
 
 def _use_synthetic() -> bool:
@@ -1137,8 +1150,9 @@ def _validate_and_get_record_payload(record_id: str, req: BaseManagerActionReque
 
 
 @router.post("/api/v1/records/{record_id}/notes", response_model=SubmissionRecord, tags=["Manager Actions"], deprecated=True)
-def post_manager_note(record_id: str, req: ManagerNoteRequest, manager_identity: str = Depends(get_trusted_manager_identity)):
+def post_manager_note(record_id: str, req: ManagerNoteRequest, response: Response = None, manager_identity: str = Depends(get_trusted_manager_identity)):
     """Add a local manager note. Notes never reset timers or overwrite message history."""
+    _mark_legacy_route_use(response, "notes", "action:ADD_NOTE")
     if not req.note_text.strip():
         raise HTTPException(status_code=400, detail="Note text cannot be empty.")
 
@@ -1295,8 +1309,9 @@ def post_interview_confirmation(record_id: str, req: InterviewConfirmationReques
 
 
 @router.post("/api/v1/records/{record_id}/interview-schedule", response_model=SubmissionRecord, tags=["Manager Actions"], deprecated=True)
-def post_interview_schedule(record_id: str, req: InterviewScheduleRequest, manager_identity: str = Depends(get_trusted_manager_identity)):
+def post_interview_schedule(record_id: str, req: InterviewScheduleRequest, response: Response = None, manager_identity: str = Depends(get_trusted_manager_identity)):
     """Persist a manager-confirmed future interview date without starting a feedback timer."""
+    _mark_legacy_route_use(response, "interview-schedule", "interview-confirmation")
     rec, payload = _validate_and_get_record_payload(record_id, req)
     try:
         scheduled_at = datetime.fromisoformat(f"{req.interview_date}T{req.interview_time}:00")
@@ -1368,8 +1383,9 @@ def post_review_deferral(record_id: str, req: ReviewDeferralRequest, manager_ide
 
 
 @router.post("/api/v1/records/{record_id}/outcome-decision", response_model=SubmissionRecord, tags=["Manager Actions"], deprecated=True)
-def post_outcome_decision(record_id: str, req: OutcomeDecisionRequest, manager_identity: str = Depends(get_trusted_manager_identity)):
+def post_outcome_decision(record_id: str, req: OutcomeDecisionRequest, response: Response = None, manager_identity: str = Depends(get_trusted_manager_identity)):
     """Set manager outcome decision."""
+    _mark_legacy_route_use(response, "outcome-decision", "action:REVIEW_OUTCOME")
     rec, payload = _validate_and_get_record_payload(record_id, req)
     now_iso = datetime.now(TIMEZONE_UTC).isoformat()
 
@@ -1465,8 +1481,9 @@ def post_outcome_decision(record_id: str, req: OutcomeDecisionRequest, manager_i
 
 
 @router.post("/api/v1/records/{record_id}/close", response_model=SubmissionRecord, tags=["Manager Actions"], deprecated=True)
-def post_close_record(record_id: str, req: CloseRecordRequest, manager_identity: str = Depends(get_trusted_manager_identity)):
+def post_close_record(record_id: str, req: CloseRecordRequest, response: Response = None, manager_identity: str = Depends(get_trusted_manager_identity)):
     """Close record with required reason and optional/required note."""
+    _mark_legacy_route_use(response, "close", "action:CLOSE_RECORD")
     valid_reasons = {
         "Position closed", "Candidate withdrawn", "Client rejected", 
         "Duplicate submission", "Duplicate submission entry", "Duplicate Submission",
@@ -1510,8 +1527,9 @@ def post_close_record(record_id: str, req: CloseRecordRequest, manager_identity:
 
 
 @router.post("/api/v1/records/{record_id}/reopen", response_model=SubmissionRecord, tags=["Manager Actions"], deprecated=True)
-def post_reopen_record(record_id: str, req: ReopenRecordRequest, manager_identity: str = Depends(get_trusted_manager_identity)):
+def post_reopen_record(record_id: str, req: ReopenRecordRequest, response: Response = None, manager_identity: str = Depends(get_trusted_manager_identity)):
     """Reopen a closed record."""
+    _mark_legacy_route_use(response, "reopen", "action:REOPEN_RECORD")
     rec, payload = _validate_and_get_record_payload(record_id, req)
     now_iso = datetime.now(TIMEZONE_UTC).isoformat()
 
