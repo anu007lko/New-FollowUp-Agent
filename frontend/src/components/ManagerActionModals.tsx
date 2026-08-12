@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
-import type { FullRecord, LinkedInterviewSuggestion, LinkedConversation, DraftRecipientPreview, DraftApprovalResponse, DraftCreationResult, DraftOperationStatus } from '../types';
+import type { FullRecord, LinkedInterviewSuggestion, LinkedConversation, DraftRecipientPreview, DraftApprovalResponse, DraftCreationResult, DraftOperationStatus, BulkJobClosePreview } from '../types';
 import { formatTimestamp, getDisplayLabel } from '../utils/displayStatus';
 import { CustomDropdown } from './CustomDropdown';
 import { playSound } from '../utils/audio';
@@ -37,6 +37,7 @@ export function ManagerActionModals({
   const [closeReason, setCloseReason] = useState('Position closed');
   const [closeNote, setCloseNote] = useState('');
   const [reopenReason, setReopenReason] = useState('');
+  const [bulkClosePreview, setBulkClosePreview] = useState<BulkJobClosePreview | null>(null);
 
   // Status Action Confirmation State
   const [actionReason, setActionReason] = useState('');
@@ -60,7 +61,7 @@ export function ManagerActionModals({
   useEffect(() => {
     setDraftWizardStep('decision'); setDraftPreview(null); setDraftApproval(null); setDraftStatus(null);
     setDraftContent(''); setDraftBccText(''); setErrorMessage(null); setCurrentVersion(record.record_version);
-    setActionReason(''); setActionNote('');
+    setActionReason(''); setActionNote(''); setBulkClosePreview(null);
     if (activeModal) {
       fetch('/api/v1/session/csrf-token', { method: 'POST' })
         .then(r => r.ok ? r.json() : Promise.reject())
@@ -208,6 +209,38 @@ export function ManagerActionModals({
     } finally {
       setSubmitting(false);
     }
+  };
+
+  const previewBulkJobClose = async () => {
+    setSubmitting(true); setErrorMessage(null);
+    try {
+      const res = await fetch(`/api/v1/records/${record.id}/bulk-close-job/preview`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+        body: JSON.stringify({ record_version: currentVersion }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || 'Could not prepare job close preview');
+      setBulkClosePreview(data as BulkJobClosePreview);
+    } catch (e: any) { setErrorMessage(e.message || 'Could not prepare job close preview'); }
+    finally { setSubmitting(false); }
+  };
+
+  const confirmBulkJobClose = async () => {
+    if (!bulkClosePreview) return;
+    setSubmitting(true); setErrorMessage(null);
+    try {
+      const res = await fetch(`/api/v1/records/${record.id}/bulk-close-job`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-csrf-token': csrfToken },
+        body: JSON.stringify({ record_version: currentVersion, targets: bulkClosePreview.records.map(r => ({ record_id: r.record_id, record_version: r.record_version })) }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (res.status === 409 && onRefreshRecord) await onRefreshRecord();
+        throw new Error(data.detail || 'Bulk close could not be completed');
+      }
+      await onSuccessAction(); onCloseModal();
+    } catch (e: any) { setErrorMessage(e.message || 'Bulk close could not be completed'); }
+    finally { setSubmitting(false); }
   };
 
   const handleFollowUpDecision = async () => {
@@ -805,6 +838,20 @@ export function ManagerActionModals({
               />
             )}
 
+            {closeReason === 'Position closed' && record.job_id && !bulkClosePreview && (
+              <button className="btn-secondary" style={{ marginBottom: '12px' }} disabled={submitting} onClick={previewBulkJobClose}>
+                Close all active submissions for Job ID {record.job_id}
+              </button>
+            )}
+
+            {bulkClosePreview && (
+              <div className="modal-evidence-box" style={{ marginBottom: '12px' }}>
+                <strong>Confirm bulk close for Job ID {bulkClosePreview.job_id}</strong>
+                <p>This closes only these active submissions. Already closed records will not change.</p>
+                <ul>{bulkClosePreview.records.map(item => <li key={item.record_id}>{item.candidate_name || 'Unknown candidate'} — {item.domain_status}</li>)}</ul>
+              </div>
+            )}
+
             <div className="modal-actions">
               <button className="btn-secondary" onClick={onCloseModal} disabled={submitting}>Cancel</button>
               <button
@@ -819,6 +866,9 @@ export function ManagerActionModals({
               >
                 {submitting ? 'Closing...' : 'Close Record'}
               </button>
+              {bulkClosePreview && <button className="btn-danger" disabled={submitting || bulkClosePreview.records.length === 0} onClick={confirmBulkJobClose}>
+                {submitting ? 'Closing...' : `Confirm Close ${bulkClosePreview.records.length} Records`}
+              </button>}
             </div>
           </div>
         )}

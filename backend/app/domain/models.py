@@ -813,6 +813,39 @@ class ActionExecutionRequest(BaseModel):
         return normalize_close_reason(str(v))
 
 
+class BulkJobCloseTarget(BaseModel):
+    """Version token for one record shown in a bulk-close preview."""
+    record_id: str
+    record_version: int
+
+
+class BulkJobClosePreviewRequest(BaseModel):
+    record_version: int
+
+
+class BulkJobClosePreviewItem(BaseModel):
+    record_id: str
+    candidate_name: Optional[str] = None
+    domain_status: DomainStatus
+    record_version: int
+
+
+class BulkJobClosePreviewResponse(BaseModel):
+    job_id: str
+    records: List[BulkJobClosePreviewItem]
+
+
+class BulkJobCloseRequest(BaseModel):
+    record_version: int
+    targets: List[BulkJobCloseTarget]
+
+
+class BulkJobCloseResult(BaseModel):
+    closed_record_ids: List[str] = Field(default_factory=list)
+    skipped_record_ids: List[str] = Field(default_factory=list)
+    conflicted_record_ids: List[str] = Field(default_factory=list)
+
+
 # --- §6 Outcome Option DTO ---
 
 class OutcomeOptionDTO(BaseModel):

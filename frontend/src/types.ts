@@ -174,6 +174,18 @@ export interface FullRecord {
   workflow?: CompactWorkflowDTO;
 }
 
+export interface BulkJobClosePreviewItem {
+  record_id: string;
+  candidate_name?: string;
+  domain_status: string;
+  record_version: number;
+}
+
+export interface BulkJobClosePreview {
+  job_id: string;
+  records: BulkJobClosePreviewItem[];
+}
+
 export interface DashboardSummary {
   awaiting_response: number;
   pending_follow_up: number;

@@ -27,6 +27,8 @@ from backend.app.domain.models import (
     ActionExecutionRequest, RecordDetailResponse, RecordListItem,
     SubmissionRecordDTO, RecordWorkflowDTO, CompactWorkflowDTO,
     WorkflowStatus, ActionID, CloseReason, OutcomeOptionID, AuditEventType
+    , BulkJobClosePreviewRequest, BulkJobClosePreviewResponse, BulkJobClosePreviewItem,
+    BulkJobCloseRequest, BulkJobCloseResult
 )
 from backend.app.domain.workflow_policy_engine import WorkflowPolicyEngine
 from backend.app.domain.workflow_view_composer import WorkflowViewComposer, normalize_workflow_status
@@ -396,6 +398,90 @@ def execute_workflow_action(record_id: str, request: ActionExecutionRequest):
         has_draft = False
 
     return WorkflowViewComposer.compose_detail(updated_record, has_draft=has_draft)
+
+
+def _active_job_records(job_id: str):
+    return [
+        item for item in persistence.list_records()
+        if item.job_id == job_id and item.domain_status != DomainStatus.CLOSED
+    ]
+
+
+@router.post("/api/v1/records/{record_id}/bulk-close-job/preview", response_model=BulkJobClosePreviewResponse, tags=["Workflow Actions"])
+def preview_bulk_job_close(record_id: str, request: BulkJobClosePreviewRequest):
+    """Preview active records that can be closed together for a Position Closed outcome."""
+    record = _get_record(record_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+    if record.record_version != request.record_version:
+        raise HTTPException(status_code=409, detail="Record version token is stale or mismatched.")
+    if not record.job_id:
+        raise HTTPException(status_code=400, detail="Bulk close requires a Job ID")
+    return BulkJobClosePreviewResponse(
+        job_id=record.job_id,
+        records=[BulkJobClosePreviewItem(
+            record_id=item.id,
+            candidate_name=item.candidate_name,
+            domain_status=item.domain_status,
+            record_version=item.record_version,
+        ) for item in _active_job_records(record.job_id)],
+    )
+
+
+@router.post("/api/v1/records/{record_id}/bulk-close-job", response_model=BulkJobCloseResult, tags=["Workflow Actions"])
+def bulk_close_job(record_id: str, request: BulkJobCloseRequest):
+    """Explicitly close only the versioned active records selected from a preview."""
+    source = _get_record(record_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Record not found")
+    if source.record_version != request.record_version:
+        raise HTTPException(status_code=409, detail="Record version token is stale or mismatched.")
+    if not source.job_id:
+        raise HTTPException(status_code=400, detail="Bulk close requires a Job ID")
+
+    requested = {target.record_id: target.record_version for target in request.targets}
+    result = BulkJobCloseResult()
+    for header in _active_job_records(source.job_id):
+        expected_version = requested.get(header.id)
+        if expected_version is None:
+            continue
+        snapshot = persistence.get_record_payload_snapshot(header.id)
+        if not snapshot:
+            result.skipped_record_ids.append(header.id)
+            continue
+        payload, stored_version, stored_status = snapshot
+        if stored_version != expected_version or stored_status == DomainStatus.CLOSED.value:
+            result.conflicted_record_ids.append(header.id)
+            continue
+        new_version = stored_version + 1
+        payload["record_version"] = new_version
+        payload["domain_status"] = DomainStatus.CLOSED.value
+        payload["close_reason"] = CloseReason.POSITION_CLOSED.value
+        payload["closed_at"] = datetime.now(timezone.utc).isoformat()
+        payload["manual_terminal_lock"] = True
+        timeline = payload.get("timeline", [])
+        timeline.append(create_audit_event(
+            record_id=header.id,
+            event_type=AuditEventType.USER_ACTION.value,
+            actor="tarun@clifyx.com",
+            prior_status=normalize_workflow_status(stored_status).value,
+            resulting_status=WorkflowStatus.CLOSED.value,
+            record_version=new_version,
+            action_id=ActionID.CLOSE_RECORD.value,
+            note=f"Bulk closed because Job ID {source.job_id} was marked Position Closed.",
+            body_preview=f"[Audit: USER_ACTION] Bulk closed for Job ID {source.job_id}: Position closed.",
+            extra_fields={"bulk_job_close": True, "job_id": source.job_id},
+        ))
+        payload["timeline"] = timeline
+        try:
+            persistence.update_record_optimistically(header.id, payload, DomainStatus.CLOSED.value, stored_version)
+            result.closed_record_ids.append(header.id)
+        except ValueError:
+            result.conflicted_record_ids.append(header.id)
+    for target_id in requested:
+        if target_id not in result.closed_record_ids and target_id not in result.conflicted_record_ids:
+            result.skipped_record_ids.append(target_id)
+    return result
 
 
 
