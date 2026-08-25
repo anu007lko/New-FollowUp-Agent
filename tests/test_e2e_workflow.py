@@ -57,7 +57,7 @@ def db_client(tmp_path, monkeypatch):
             {
                 "id": graph_id,
                 "internetMessageId": "<e2e-1@fcb.com>",
-                "from": {"emailAddress": {"address": "tarun@clifyx.com"}},
+                "from": {"emailAddress": {"address": "tarun@example.com"}},
                 "sentDateTime": ts,
                 "bodyPreview": "Original submission email",
                 "toRecipients": [{"emailAddress": {"address": "sara@fcb.com"}}]

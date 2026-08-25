@@ -35,8 +35,8 @@ def _enable_ollama_for_m4_tests(monkeypatch):
 @pytest.fixture
 def sample_timeline():
     return [
-        TimelineEntry(entry_id="msg-101", record_id="r1", sender="tarun@clifyx.com", timestamp="2026-07-15T10:00:00Z", body_preview="Submission: Govinda Mundra for TPM role at AMEX"),
-        TimelineEntry(entry_id="msg-102", record_id="r1", sender="recruiter@tcs.com", timestamp="2026-07-16T11:00:00Z", body_preview="Interview scheduled for July 30 at 2pm ET", classification="InterviewRequestScheduled"),
+        TimelineEntry(entry_id="msg-101", record_id="r1", sender="tarun@example.com", timestamp="2026-07-15T10:00:00Z", body_preview="Submission: Govinda Mundra for TPM role at AMEX"),
+        TimelineEntry(entry_id="msg-102", record_id="r1", sender="recruiter@example.com", timestamp="2026-07-16T11:00:00Z", body_preview="Interview scheduled for July 30 at 2pm ET", classification="InterviewRequestScheduled"),
     ]
 
 

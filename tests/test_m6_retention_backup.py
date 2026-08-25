@@ -85,7 +85,7 @@ def test_latest_real_message_controls_expiry():
         manager_notes="[2026-08-01T10:00:00Z] Manager added note recently",
         system_notes="[2026-08-02T10:00:00Z] System event added recently",
         timeline=[
-            TimelineEntry(entry_id="t1", record_id="test-rec-retention-01", sender="tarun@clifyx.com", timestamp="2026-03-01T10:00:00Z", body_preview="Real email message", to_recipients=["recruiter@tcs.com"]),
+            TimelineEntry(entry_id="t1", record_id="test-rec-retention-01", sender="tarun@example.com", timestamp="2026-03-01T10:00:00Z", body_preview="Real email message", to_recipients=["recruiter@example.com"]),
             TimelineEntry(entry_id="t2", record_id="test-rec-retention-01", sender="Manager Action (Manual Confirmation)", timestamp="2026-08-01T10:00:00Z", body_preview="Manager note entry", is_system_note=True),
         ]
     )
@@ -129,7 +129,7 @@ def test_deletion_requires_final_confirmation():
     records = get_synthetic_records()
     request = DeletionApprovalRequest(
         record_ids=["syn-rec-007"],
-        confirmed_by="tarun@clifyx.com",
+        confirmed_by="tarun@example.com",
         final_confirmation=False  # Must fail closed
     )
     with pytest.raises(ValueError, match="final_confirmation must be explicitly True"):
@@ -142,7 +142,7 @@ def test_selected_record_deletion_only_and_operational_record_state():
     
     request = DeletionApprovalRequest(
         record_ids=["syn-rec-007"],
-        confirmed_by="tarun@clifyx.com",
+        confirmed_by="tarun@example.com",
         final_confirmation=True
     )
     
@@ -168,7 +168,7 @@ def test_selected_record_deletion_only_and_operational_record_state():
     assert "[CONTENT REMOVED" not in rec_001.timeline[0].body_preview
     
     # 4. Verification Audit Event generated
-    assert audit_evt.approved_by == "tarun@clifyx.com"
+    assert audit_evt.approved_by == "tarun@example.com"
     assert audit_evt.stats.record_count == 1
     assert audit_evt.verification_result == "passed_integrity_check"
 
@@ -194,7 +194,7 @@ def test_encrypted_backup_contains_no_secrets():
     keychain = KeychainAdapter(use_memory_fallback=True)
     
     with tempfile.TemporaryDirectory() as tmp_dir:
-        result = create_encrypted_backup(records, "tarun@clifyx.com", backup_dir=tmp_dir, keychain_adapter=keychain)
+        result = create_encrypted_backup(records, "tarun@example.com", backup_dir=tmp_dir, keychain_adapter=keychain)
         
         assert os.path.exists(result.backup_file_path)
         assert result.record_count == len(records)
@@ -206,7 +206,7 @@ def test_encrypted_backup_contains_no_secrets():
         
         assert not content_bytes.startswith(b"{")
         assert b"David Chen" not in content_bytes  # Content is Fernet encrypted
-        assert b"tarun@clifyx.com" not in content_bytes
+        assert b"tarun@example.com" not in content_bytes
 
 
 def test_restore_quarantine_and_expiry_enforcement():
@@ -216,10 +216,10 @@ def test_restore_quarantine_and_expiry_enforcement():
     now = datetime(2026, 8, 3, 12, 0, 0, tzinfo=TIMEZONE_NEW_YORK)
     
     with tempfile.TemporaryDirectory() as tmp_dir:
-        backup_res = create_encrypted_backup(records, "tarun@clifyx.com", backup_dir=tmp_dir, keychain_adapter=keychain)
+        backup_res = create_encrypted_backup(records, "tarun@example.com", backup_dir=tmp_dir, keychain_adapter=keychain)
         
         # Restore backup into quarantine
-        restore_res, quarantined = restore_backup_to_quarantine(backup_res.backup_file_path, "tarun@clifyx.com", keychain_adapter=keychain, current_time=now)
+        restore_res, quarantined = restore_backup_to_quarantine(backup_res.backup_file_path, "tarun@example.com", keychain_adapter=keychain, current_time=now)
         
         assert restore_res.quarantined_record_count == len(records)
         assert restore_res.requires_retention_action is True
@@ -273,19 +273,19 @@ class TestRetentionEndpoints:
         reset_synthetic_records_cache()
         payload = {
             "record_ids": ["syn-rec-007"],
-            "confirmed_by": "tarun@clifyx.com",
+            "confirmed_by": "tarun@example.com",
             "final_confirmation": True
         }
         res = client.post("/api/v1/retention/delete-approved", json=payload)
         assert res.status_code == 200
         audit = res.json()
-        assert audit["approved_by"] == "tarun@clifyx.com"
+        assert audit["approved_by"] == "tarun@example.com"
         assert audit["verification_result"] == "passed_integrity_check"
 
     def test_backup_and_restore_endpoints(self):
         reset_synthetic_records_cache()
         # 1. Create backup
-        backup_res = client.post("/api/v1/backup/create", json={"manager_identity": "tarun@clifyx.com"})
+        backup_res = client.post("/api/v1/backup/create", json={"manager_identity": "tarun@example.com"})
         assert backup_res.status_code == 200
         backup_data = backup_res.json()
         assert "backup_file_path" in backup_data
@@ -293,7 +293,7 @@ class TestRetentionEndpoints:
         # 2. Restore into quarantine
         restore_res = client.post("/api/v1/backup/restore", json={
             "backup_file_path": backup_data["backup_file_path"],
-            "manager_identity": "tarun@clifyx.com"
+            "manager_identity": "tarun@example.com"
         })
         assert restore_res.status_code == 200
         restore_data = restore_res.json()

@@ -48,16 +48,16 @@ def temp_db(tmp_path, monkeypatch):
         "thread_messages": [
             {
                 "id": graph_id,
-                "internetMessageId": "<test-msg-1@clifyx.com>",
-                "from": {"emailAddress": {"address": "manager@clifyx.com"}},
+                "internetMessageId": "<test-msg-1@example.com>",
+                "from": {"emailAddress": {"address": "manager@example.com"}},
                 "sentDateTime": ts,
                 "bodyPreview": "Original submission email",
                 "toRecipients": [{"emailAddress": {"address": "client@example.com"}}]
             },
             {
                 "id": "AAMkAGDuplicateCopy",
-                "internetMessageId": "<test-msg-1@clifyx.com>",  # Duplicate cross-folder copy
-                "from": {"emailAddress": {"address": "manager@clifyx.com"}},
+                "internetMessageId": "<test-msg-1@example.com>",  # Duplicate cross-folder copy
+                "from": {"emailAddress": {"address": "manager@example.com"}},
                 "sentDateTime": ts,
                 "bodyPreview": "Original submission email copy",
                 "toRecipients": [{"emailAddress": {"address": "client@example.com"}}]
@@ -121,7 +121,7 @@ def test_timeline_internet_message_id_deduplication(temp_db):
     engine, rec_id, _, _, _ = temp_db
     rec = engine.get_record_by_id(rec_id)
     
-    # Payload has 2 thread_messages with identical internetMessageId <test-msg-1@clifyx.com>
+    # Payload has 2 thread_messages with identical internetMessageId <test-msg-1@example.com>
     # Rendered timeline must contain exactly 1 entry
     assert len(rec.timeline) == 1
     assert rec.timeline[0].graph_immutable_id == "AAMkAGTest123"

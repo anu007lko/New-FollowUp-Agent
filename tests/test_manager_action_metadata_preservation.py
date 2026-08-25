@@ -51,8 +51,8 @@ def temp_persistence_db(tmp_path, monkeypatch):
         "thread_messages": [
             {
                 "id": graph_id,
-                "internetMessageId": "<orig-msg-1@clifyx.com>",
-                "from": {"emailAddress": {"address": "manager@clifyx.com"}},
+                "internetMessageId": "<orig-msg-1@example.com>",
+                "from": {"emailAddress": {"address": "manager@example.com"}},
                 "sentDateTime": ts,
                 "bodyPreview": "Submission for Joicy Malarvizhi Job 416955",
                 "toRecipients": [{"emailAddress": {"address": "client@example.com"}}]
@@ -63,14 +63,14 @@ def temp_persistence_db(tmp_path, monkeypatch):
                 "from": {"emailAddress": {"address": "client@example.com"}},
                 "sentDateTime": "2026-07-02T14:00:00Z",
                 "bodyPreview": "Interview invitation for Joicy Malarvizhi tomorrow at 2 PM",
-                "toRecipients": [{"emailAddress": {"address": "manager@clifyx.com"}}]
+                "toRecipients": [{"emailAddress": {"address": "manager@example.com"}}]
             }
         ],
         "timeline": [
             {
                 "entry_id": "init_submission",
                 "graph_immutable_id": graph_id,
-                "sender": "manager@clifyx.com",
+                "sender": "manager@example.com",
                 "timestamp": ts,
                 "is_system_note": False,
                 "body_preview": "Submission for Joicy Malarvizhi Job 416955"

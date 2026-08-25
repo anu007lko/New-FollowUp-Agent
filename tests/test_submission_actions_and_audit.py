@@ -21,7 +21,7 @@ def test_requirement_is_closed_phrase():
     facts.latest_inbound_message = MessageFact(
         graph_immutable_id="msg-001",
         timestamp=datetime.now(timezone.utc),
-        sender_email="kavi.rajendiran@tcs.com",
+        sender_email="recruiter.one@example.com",
         direction=MessageDirection.INBOUND_MESSAGE,
         is_meaningful=True,
         body_preview="This requirement is closed, please do not submit profiles."
@@ -166,7 +166,7 @@ def test_rani_ciriguri_status_and_followup_exclusion(temp_db):
         "thread_messages": [
             {
                 "id": "msg-rani-1",
-                "from": {"emailAddress": {"address": "kavi.rajendiran@tcs.com", "name": "Kavi Rajendiran"}},
+                "from": {"emailAddress": {"address": "recruiter.one@example.com", "name": "Recruiter One"}},
                 "bodyPreview": "This requirement is closed, please do not submit profiles.",
                 "sentDateTime": datetime.now(timezone.utc).isoformat()
             }
